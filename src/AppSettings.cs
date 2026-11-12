@@ -1,0 +1,477 @@
+using System;
+using System.Collections.Generic;
+using System.IO;
+using YamlDotNet.Serialization;
+using YamlDotNet.Serialization.NamingConventions;
+
+namespace task_monitor
+{
+    /// <summary>深浅色设置 (settings.yaml <c>theme</c>). null = 跟随系统.</summary>
+    public enum AppThemeSetting { Light, Dark }
+
+    /// <summary>磁盘/GPU headline 显示方式 (settings.yaml <c>diskDisplay</c> / <c>gpuDisplay</c>):
+    /// what the overlay slot and the detail chart show — the mean / max across disks
+    /// (adapters), or one specific one's. null = the metric's default (磁盘 Average, GPU Max).</summary>
+    public enum MetricDisplayMode { Average, Max, Specific }
+
+    /// <summary>GPU 任务栏显示内容 (settings.yaml <c>gpuTaskbarContent</c>): the taskbar GPU
+    /// slot shows the utilization (the default), the temperature, or BOTH — "both" packs TWO
+    /// stacked rows ("GPU 42%" + "GPU 65°C"), not one concatenated line. Values = the settings
+    /// combo indices. null = Usage.</summary>
+    public enum GpuTaskbarContent { Usage, Temperature, Both }
+
+    /// <summary>GPU 温度单位 (settings.yaml <c>gpuTempUnit</c>): the display unit for GPU
+    /// temperatures (taskbar row + detail popup) — the snapshot itself always carries Celsius;
+    /// the conversion is display-side only. null = Celsius.</summary>
+    public enum GpuTempUnit { Celsius, Fahrenheit }
+
+    public sealed class TaskbarDisplaySelection
+    {
+        public string Id { get; set; }
+        public string Name { get; set; }
+    }
+
+    /// <summary>
+    /// Persistent settings store — <c>settings.yaml</c> in the exe's own directory (the
+    /// run directory; resolved from <see cref="AppDomain.BaseDirectory"/> because the
+    /// working directory is not stable across the runas self-relaunch). The single store
+    /// for ALL settings; each key is documented on its own property below. The 开机自启动
+    /// toggle is deliberately NOT here — the scheduled task itself is the state
+    /// (<see cref="StartupTask"/>).
+    /// </summary>
+    public sealed class AppSettings
+    {
+        /// <summary>
+        /// Whether the user has allowed the app to always run elevated. null = never
+        /// asked (first run) → the consent dialog shows. Only ever written as true;
+        /// "不允许" is deliberately NOT persisted — the next launch asks again.
+        /// </summary>
+        public bool? ElevationConsent { get; set; }
+
+        /// <summary>
+        /// 首次启动引导状态。null = 旧版配置（不补弹）或尚未标记；false = 新安装已完成提权同意、
+        /// 等待提升后的进程显示向导；true = 已完成或跳过。<see cref="IsNewInstall"/> 区分全新安装与旧配置。
+        /// </summary>
+        public bool? StartupGuideCompleted { get; set; }
+
+        /// <summary>本次启动时 settings.yaml 不存在（或为空）；仅用于首次启动判定，不写入配置文件。</summary>
+        [YamlIgnore]
+        public bool IsNewInstall { get; private set; }
+
+        /// <summary>
+        /// Show the taskbar overlay on the LEFT side of the taskbar instead of right of
+        /// it. null/true = left (the default); only an explicit false is right. Which spot
+        /// "left" means per taskbar family — and Win11's fallback to the right side on a
+        /// left-aligned taskbar (no room left of Start) — is the placement code's own
+        /// contract: TaskbarWindow.CalcPosition / ClassicalReposition.
+        /// </summary>
+        public bool? OverlayOnLeft { get; set; }
+
+        /// <summary>
+        /// When <see cref="OverlayOnLeft"/>: where on the left the overlay sits — WIN11
+        /// taskbar only (the classical taskbar has a single left-side spot, so the
+        /// settings page hides this there). true = snap just left of the Start button
+        /// (follows the centred icon group as it resizes); null/false = the taskbar's
+        /// far-left corner (shifted right by a fixed reserve when the Widgets button is
+        /// shown, to avoid overlapping it).
+        /// </summary>
+        public bool? OverlaySnapToStart { get; set; }
+
+        /// <summary>
+        /// 任务栏位置 — 0 = far left, 1 = next to Start, 2 = next to the tray (that one reads
+        /// TrayNotifyWnd's live rect, so it follows the tray's icon count by itself).
+        /// null = a config written before this key existed: fall back to
+        /// </summary>
+        public int? OverlayAnchor { get; set; }
+
+        /// <summary>任务栏窗口同时显示的显示器。null = 跟随当前主显示器（旧配置默认）；
+        /// 非空时保存完整选择，已断开项保留到重连；运行时无有效目标才临时回退主屏。</summary>
+        public List<TaskbarDisplaySelection> TaskbarDisplays { get; set; }
+
+        /// <summary>
+        /// 紧凑模式 (设置 → 外观): tighten the item pitch of the taskbar overlay and the
+        /// floating widget alike — narrower horizontal cells (65/78 vs 70/84 DIP, plus a
+        /// smaller row inset), a tighter vertical grid row (18 vs 24 DIP) and two-line block
+        /// (40 vs 44), and inside the multi-row strip blocks (GPU 两者 / 网络) natural-height
+        /// lines clustered tight instead of span-derived bands. null = off (the default —
+        /// only the enabled state is written). The floors of those values are text-fit
+        /// measurements at 13px Segoe UI — see the compact constants block in TaskbarWindow.
+        /// Pushed live via <see cref="TaskbarWindow.SetCompactLayout"/> (a layout change:
+        /// the overlay resizes at once).
+        /// </summary>
+        public bool? CompactLayout { get; set; }
+
+        /// <summary>
+        /// 显示分割线（设置 → 外观）：任务栏窗口与悬浮窗口中各采样项目之间的分割线。
+        /// null = 显示（默认，仅关闭时写入 false）。只影响绘制，不改变布局或点击区域，
+        /// 通过 <see cref="TaskbarWindow.SetShowSeparators"/> 即时重绘。
+        /// </summary>
+        public bool? ShowSeparators { get; set; }
+
+        /// <summary>
+        /// 已用走势 — one usage sparkline behind every sampling item, off by default (null = off,
+        /// true is the only value ever written). Drawing-only: it changes neither the layout nor the
+        /// hit areas, and
+        /// <see cref="TaskbarWindow.SetOverlayUsageGraph"/> repaints immediately.
+        /// </summary>
+        public bool? OverlayUsageGraph { get; set; }
+
+        /// <summary>
+        /// 曲线颜色 — "#RRGGBB". null/empty = 跟随系统: App reads
+        /// HKCU\Software\Microsoft\Windows\DWM\ColorizationColor every 5 s, so an accent change
+        /// lands without a restart.
+        /// <see cref="TaskbarWindow.SetOverlayGraphColor"/> recolours in place on the next paint.
+        /// </summary>
+        public string OverlayGraphColor { get; set; }
+
+        /// <summary>
+        /// 任务栏窗口与悬浮窗口的采样项目顺序（设置 → 外观 → 项目顺序）。值为点击槽位
+        /// 0=CPU、1=内存、2=磁盘、3=GPU、4=网络；null = CPU/内存/磁盘/GPU/网络。
+        /// 读取时会去除重复、非法项并补齐缺项，关闭采样的项目仍保留在顺序中。
+        /// </summary>
+        public List<int> ItemOrder { get; set; }
+
+        /// <summary>
+        /// 悬浮模式 (设置 → 外观): true = the overlay DETACHES from the taskbar (从任务栏脱离开来
+        /// — the taskbar keeps no copy; mechanism + rules: gotchas §36) and lives on the desktop
+        /// as a free-floating card widget; null = off (the default — only the enabled state is
+        /// written). The window form is creation-time state, so App hands the flip to
+        /// <see cref="TaskbarWindow.SetFloatingMode"/>, which rebuilds the window.
+        /// </summary>
+        public bool? FloatingMode { get; set; }
+
+        /// <summary>
+        /// 置顶显示 (设置 → 外观 → 悬浮模式), floating form only: null = on (the default —
+        /// only the disabled state is written). On = the widget stays above every normal
+        /// window (like the taskbar overlay it replaces); off = an ordinary z-order window
+        /// that other windows cover. Applied live via
+        /// <see cref="TaskbarWindow.SetFloatingTopmost"/>.
+        /// </summary>
+        public bool? FloatingTopmost { get; set; }
+
+        /// <summary>允许悬浮窗超出屏幕边界（设置 → 外观 → 悬浮模式）。null = off；
+        /// 开启后拖动和常规重定位不再拉回工作区，关闭时立即恢复约束。</summary>
+        public bool? FloatingAllowOutOfBounds { get; set; }
+
+        /// <summary>
+        /// 透明度 (设置 → 外观 → 悬浮模式), floating form only: the BACKGROUND's opacity,
+        /// 0.2–1.0 — the card's alpha IS this value (1.0 = a fully opaque card; the old
+        /// see-through 0xCC tint look sits at 0.8) and the card's outline scales with it,
+        /// while text, labels and interaction fills keep their fixed alphas
+        /// (文字不要有透明度 — the numbers stay fully legible at every step). null = 1.0
+        /// (the default — only a non-default value is written); out-of-range values are
+        /// clamped by <see cref="TaskbarWindow.SetFloatingOpacity"/>. Applied live via
+        /// <see cref="TaskbarWindow.SetFloatingOpacity"/>; the taskbar-embedded form ignores
+        /// it (it must match the opaque taskbar surface).
+        /// </summary>
+        public double? FloatingOpacity { get; set; }
+
+        /// <summary>
+        /// 贴边隐藏 (设置 → 外观 → 悬浮模式), floating form only: null = off (the default —
+        /// only the enabled state is written). On = a widget dropped at its monitor work
+        /// area's 左/右/上 edge docks there and hides (behaviour + the slide/peek rules:
+        /// gotchas §38). The dock itself is DERIVED from <see cref="FloatingX"/>/<
+        /// <see cref="FloatingY"/> (a home at an edge reopens hidden) — nothing but this
+        /// switch and the home are stored. Applied live via
+        /// <see cref="TaskbarWindow.SetFloatingEdgeHide"/>; the taskbar-embedded form
+        /// ignores it.
+        /// </summary>
+        public bool? FloatingEdgeHide { get; set; }
+
+        /// <summary>
+        /// 全屏时隐藏 (设置 → 外观 → 悬浮模式), floating form only: null = on (the default —
+        /// only the disabled state is written). On = a fullscreen application in the
+        /// foreground on the widget's own monitor hides the widget until the foreground
+        /// stops being fullscreen (probe + rules: gotchas §39). Purely a switch — the
+        /// fullscreen state is probed live on the tick, nothing derived is stored. Applied
+        /// live via <see cref="TaskbarWindow.SetFloatingFullscreenHide"/>; the
+        /// taskbar-embedded form ignores it.
+        /// </summary>
+        public bool? FloatingFullscreenHide { get; set; }
+
+        /// <summary>
+        /// The floating widget's home, as SCREEN coordinates in physical pixels. null = never
+        /// dragged; negative coordinates are valid for left/top monitors and out-of-bounds homes.
+        /// Written by App after a drag or when disabling out-of-bounds. Restores clamp only
+        /// when <see cref="FloatingAllowOutOfBounds"/> is off.
+        /// </summary>
+        public int? FloatingX { get; set; }
+        public int? FloatingY { get; set; }
+
+        /// <summary>
+        /// 深浅色外观: null = 跟随系统 (the iNKORE ThemeManager tracks the system theme
+        /// live), Light/Dark = forced. Applied to <c>ThemeManager.Current.ApplicationTheme</c>
+        /// at startup and on every settings-page change (App.ApplyThemeSetting).
+        /// </summary>
+        public AppThemeSetting? Theme { get; set; }
+
+        /// <summary>
+        /// Taskbar overlay sampling/refresh cadence in ms (500 / 1000 / 2000 from the
+        /// settings combo). null = the 1000ms default. Read by App at startup and pushed
+        /// to the taskbar thread's Win32 timer (<see cref="TaskbarWindow.SetSampleInterval"/>).
+        /// </summary>
+        public int? SampleIntervalMs { get; set; }
+
+        /// <summary>
+        /// Per-metric sampling switches (设置 → 采样, one toggle per metric). null = enabled
+        /// (the default — only the disabled state is ever written). At least one metric stays
+        /// enabled; a hand-edited all-off config falls back to CPU at runtime. A disabled
+        /// metric's samplers are skipped entirely (<see cref="TaskbarWindow.SetMetricSamplingMask"/>
+        /// → <see cref="SystemSampler.SetEnabledMask"/>), its
+        /// overlay slot is hidden (the remaining slots reflow to fill the space) and its
+        /// column press is suppressed. App converts these to/from the SystemSampler mask
+        /// (bit order = the overlay hit slots).
+        /// </summary>
+        public bool? CpuSamplingEnabled { get; set; }
+        public bool? RamSamplingEnabled { get; set; }
+        public bool? DiskSamplingEnabled { get; set; }
+        public bool? GpuSamplingEnabled { get; set; }
+        public bool? NetSamplingEnabled { get; set; }
+
+        /// <summary>
+        /// 合并相同程序 (设置 → 采样项目): null = on (the default — same-exe-path rows in
+        /// the five per-process detail lists merge into one, values summed, the member count
+        /// shown as a "×N" tag chip next to the name; only the disabled state is ever
+        /// written). Merging happens BEFORE the top-8 cut (<see cref="ProcessListMerger"/>;
+        /// svchost.exe 不合并).
+        /// Pushed live via <see cref="TaskbarWindow.SetMergeSamePathProcesses"/>.
+        /// </summary>
+        public bool? MergeSamePathProcesses { get; set; }
+
+        /// <summary>
+        /// 磁盘显示方式 (设置 → 采样项目 → 磁盘): what the headline disk utilization is —
+        /// Average (null, the default — only non-default modes are written), Max (最高利用率
+        /// across disks) or Specific (<see cref="DiskDisplayIndex"/>'s one disk; a missing
+        /// specific disk falls back to the remaining disks' mean until it returns). Pushed
+        /// live via <see cref="TaskbarWindow.SetDiskDisplay"/>.
+        /// </summary>
+        public MetricDisplayMode? DiskDisplay { get; set; }
+
+        /// <summary>
+        /// The PhysicalDrive index (N of \\.\PhysicalDriveN) shown when
+        /// <see cref="DiskDisplay"/> is Specific. null/absent = disk 0. Kept when the mode
+        /// switches back to Average/Max, so returning to Specific restores the last pick.
+        /// </summary>
+        public int? DiskDisplayIndex { get; set; }
+
+        /// <summary>
+        /// GPU 显示方式 (设置 → 采样项目 → GPU): what the headline GPU utilization is —
+        /// Max (null, the default — Task Manager's sidebar rule), Average (所有 GPU 平均) or
+        /// Specific (<see cref="GpuDisplayIndex"/>'s one adapter; a missing specific adapter
+        /// falls back to the remaining adapters' max until it returns). Pushed live via
+        /// <see cref="TaskbarWindow.SetGpuDisplay"/>.
+        /// </summary>
+        public MetricDisplayMode? GpuDisplay { get; set; }
+
+        /// <summary>
+        /// The "GPU N" tab number shown when <see cref="GpuDisplay"/> is Specific.
+        /// null/absent = GPU 0. The numbering follows the adapter-set sort order, so it can
+        /// shift when the set changes (same caveat as the disk PhysicalDrive index). Kept
+        /// when the mode leaves Specific, like <see cref="DiskDisplayIndex"/>.
+        /// </summary>
+        public int? GpuDisplayIndex { get; set; }
+
+        /// <summary>
+        /// GPU 任务栏显示 (设置 → 采样项目 → GPU): what the taskbar GPU slot shows —
+        /// utilization (null, the default), the temperature, or <see cref="GpuTaskbarContent.Both"/>
+        /// (two stacked rows: the utilization row plus a temperature row). Orthogonal to
+        /// <see cref="GpuSamplingEnabled"/> (采样 gates the data, this gates the row) and to
+        /// <see cref="GpuDisplay"/> (显示方式 still picks WHICH adapters feed the utilization
+        /// headline). Pushed live via <see cref="TaskbarWindow.SetGpuTempDisplay"/> and posts
+        /// WM_APP_SET_METRICS because the row count (and so the layout width) changes with it.
+        /// </summary>
+        public GpuTaskbarContent? GpuTaskbarContent { get; set; }
+
+        /// <summary>
+        /// The "GPU N" number whose temperature the taskbar shows when
+        /// <see cref="GpuTaskbarContent"/> is Temperature/Both. null = 最高温度 (the default —
+        /// the hottest adapter, mirroring the utilization default 最高利用率); a specific adapter
+        /// that isn't currently present falls back to the max until it returns (same fallback
+        /// rule as the utilization's Specific mode). The numbering follows the adapter-set sort
+        /// order and can shift when the set changes (same caveat as
+        /// <see cref="GpuDisplayIndex"/>). Kept when the content switches back to 使用率.
+        /// </summary>
+        public int? GpuTempIndex { get; set; }
+
+        /// <summary>
+        /// GPU 温度单位 (设置 → 采样项目 → GPU): display unit for GPU temperatures — the
+        /// taskbar row and the detail popup's per-adapter 温度 both follow it. null = 摄氏度
+        /// (the default — only 华氏度 is ever written). Pure display-side conversion; the
+        /// snapshot always carries Celsius.
+        /// </summary>
+        public GpuTempUnit? GpuTempUnit { get; set; }
+
+        /// <summary>
+        /// 网络适配器 (设置 → 采样项目 → 网络): the NetworkInterface.Id (GUID) of the adapter
+        /// to sample, null = 自动 (the default — the sampler picks the Up, non-virtual
+        /// adapter carrying the most traffic, re-selecting when it goes silent or vanishes).
+        /// A pinned adapter that disappears or goes down falls back to 自动 and resumes
+        /// when it returns. Pushed live via <see cref="TaskbarWindow.SetNetAdapter"/>.
+        /// </summary>
+        public string NetAdapterId { get; set; }
+
+        /// <summary>
+        /// Display name of <see cref="NetAdapterId"/> ("Description (Name)") — kept only so
+        /// the settings picker can show a "…（未连接）" placeholder when the pinned adapter
+        /// is absent; never used for matching (the Id is).
+        /// </summary>
+        public string NetAdapterName { get; set; }
+
+        /// <summary>
+        /// 公网 IP 查询 (设置 → 采样项目 → 网络): null = on (the default — the Network
+        /// detail panel shows the public IPv4/IPv6, fetched from the what-is-my-ip
+        /// endpoints in <see cref="NetInfoSampler"/>, plus the 公网延迟 ICMP ping to
+        /// www.baidu.com); only the disabled state is ever written. Off stops BOTH the
+        /// HTTP lookups and the latency probe — no traffic to the public internet at all
+        /// (the LAN-only 本地延迟 gateway ping is unaffected). Pushed live via
+        /// <see cref="TaskbarWindow.SetPublicIpLookup"/>.
+        /// </summary>
+        public bool? PublicIpEnabled { get; set; }
+
+        /// <summary>
+        /// Clash/Mihomo integration switch (设置 → 采样项目 → 网络 → Clash/Mihomo 卡片):
+        /// null = on (the default — the core at <see cref="ClashApiAddress"/>, or the
+        /// 127.0.0.1:9090 default when that's unset, is polled and its proxied per-process
+        /// traffic joins the Network list as "Clash"-tagged rows); only the disabled
+        /// state is ever written. Off idles the poller completely (zero network).
+        /// Pushed live via <see cref="TaskbarWindow.SetClashApi"/>.
+        /// </summary>
+        public bool? ClashEnabled { get; set; }
+
+        /// <summary>
+        /// Clash/Mihomo external-controller address (设置 → 采样项目 → 网络 → Clash/Mihomo):
+        /// "host:port" (an http:// prefix is tolerated), null/empty = the conventional
+        /// <see cref="ClashSampler.DefaultAddress"/> (127.0.0.1:9090) — a stock core works
+        /// with zero setup, and only a custom address is ever written here. Pushed live via
+        /// <see cref="TaskbarWindow.SetClashApi"/>.
+        /// </summary>
+        public string ClashApiAddress { get; set; }
+
+        /// <summary>
+        /// API secret for <see cref="ClashApiAddress"/> (the controller's
+        /// <c>Authorization: Bearer</c> token), null/empty = none. Stored in plain text
+        /// here, like the core's own config file does — the endpoint is meant to be
+        /// loopback-only.
+        /// </summary>
+        public string ClashApiSecret { get; set; }
+
+        /// <summary>
+        /// 启动时检查更新 (设置 → 通用): null = on (the default — only the disabled state
+        /// is ever written). Once per launch <see cref="UpdateChecker"/> reads the latest
+        /// release tag from the configured <see cref="UpdateSource"/> and prompts when a
+        /// newer version exists. Takes effect on the next startup.
+        /// </summary>
+        public bool? UpdateCheckEnabled { get; set; }
+
+        /// <summary>
+        /// 更新源 (设置 → 通用): "cnb" (null, the default — the releases page's
+        /// server-rendered HTML is scraped, since CNB's OpenAPI requires a login even for
+        /// public repos) or "github" (the anonymous releases JSON API). Only the
+        /// non-default choice is ever written.
+        /// </summary>
+        public string UpdateSource { get; set; }
+
+        /// <summary>
+        /// The release tag the user dismissed with 不再提醒 (e.g. "v1.0.1"), null = none.
+        /// That exact version is never prompted again; a still newer one is.
+        /// </summary>
+        public string IgnoredUpdateVersion { get; set; }
+
+        /// <summary>
+        /// 本月已使用流量（上传、下载，单位字节）。由 <see cref="NetUsage"/> 在每个采样 tick 里
+        /// 按「速率 × 实际间隔」累加，每 30 秒和退出时落盘。
+        /// **已知限制**：程序没运行时不计入 —— 靠的是自己每秒采样，TrafficMonitor 也是这个行为。
+        /// </summary>
+        public long NetMonthUpBytes { get; set; }
+
+        /// <inheritdoc cref="NetMonthUpBytes"/>
+        public long NetMonthDownBytes { get; set; }
+
+        /// <summary>
+        /// 累计所属的月份，形如 "2026-11"。与当前月份不同即视为跨月，累计清零重来（每月 1 号）。
+        /// </summary>
+        public string NetMonthPeriod { get; set; }
+
+        /// <summary>今日已使用流量（上传、下载，字节）。每天 0 点归零。</summary>
+        public long NetTodayUpBytes { get; set; }
+
+        /// <inheritdoc cref="NetTodayUpBytes"/>
+        public long NetTodayDownBytes { get; set; }
+
+        /// <summary>今日累计所属日期，形如 "2026-11-11"。与今天不同即清零。</summary>
+        public string NetTodayDate { get; set; }
+
+        /// <summary>
+        /// 多月流量历史（`net_history.json`）保留最近几个月，1~120，默认 12。
+        /// null = 用默认值。超出范围会被 <see cref="NetHistory.NormalizeKeep"/> 夹回去。
+        /// 历史本身不进这个文件 —— 它是独立的数据文件，删掉它只丢历史、不动配置。
+        /// </summary>
+        public int? NetHistoryKeepMonths { get; set; }
+
+        /// <summary>
+        /// 「网络」详情弹窗里是否显示「往月：…」那一行。null/false = 不显示 —— **默认关**：
+        /// 这是给想对月账的人用的附加信息，多数人只需要「本月 / 今日」两行（用户 2026-11-12 定）。
+        /// 关掉只影响显示，历史照样按月记录。
+        /// </summary>
+        public bool? ShowNetHistory { get; set; }
+
+        /// <summary>弹窗里是否显示「本月已使用」那一行（设置 → 外观 → 网络流量统计）。null/false = 不显示（默认关，要让用户主动打开）。</summary>
+        public bool? ShowNetMonthUsage { get; set; }
+
+        /// <inheritdoc cref="ShowNetMonthUsage"/>
+        public bool? ShowNetTodayUsage { get; set; }
+
+        /// <summary>
+        /// 累计流量的单位是否锁定在 GB（设置 → 外观 → 固定按 GB 显示）。
+        /// true = 超过 1024 GB 也不换算成 TB/PB，一直用 GB 显示（只换显示单位，数值仅供参照，不作对账依据）；
+        /// null/false = 正常自动升档 GB → TB → PB。默认关。
+        /// </summary>
+        public bool? NetUsageFixedGb { get; set; }
+
+
+        public static string FilePath { get; } =
+            Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "settings.yaml");
+
+        public static AppSettings Load()
+        {
+            try
+            {
+                if (!File.Exists(FilePath)) return new AppSettings { IsNewInstall = true };
+                var deserializer = new DeserializerBuilder()
+                    .WithNamingConvention(CamelCaseNamingConvention.Instance)
+                    .IgnoreUnmatchedProperties()   // tolerate keys from newer builds
+                    .Build();
+                return deserializer.Deserialize<AppSettings>(File.ReadAllText(FilePath))
+                       ?? new AppSettings { IsNewInstall = true };  // header-only / empty file
+            }
+            catch (Exception ex)
+            {
+                // Never lose a hand-edited or corrupt file silently — keep a copy as .bad.
+                // COPY, overwriting: net48's File.Move refuses an existing target, so after
+                // one corruption every later preservation silently failed and the next Save
+                // destroyed the file it was meant to keep. Logger (not Debug) because a
+                // Release build has no Debug listener — "所有设置都重置了" must not arrive
+                // with an empty log (§4/§5). Logger never throws.
+                try { File.Copy(FilePath, FilePath + ".bad", true); } catch { /* best effort */ }
+                Logger.Warn("settings.yaml 不可读，改用默认值（原文件已另存为 .bad）", ex);
+                return new AppSettings();
+            }
+        }
+
+        public void Save()
+        {
+            var serializer = new SerializerBuilder()
+                .WithNamingConvention(CamelCaseNamingConvention.Instance)
+                .ConfigureDefaultValuesHandling(DefaultValuesHandling.OmitNull)
+                .Build();
+            // Atomic swap. The old Delete-then-Move left a window in which settings.yaml did
+            // not exist at all: a kill there (or a failing Move — AV holding the file) lost
+            // every setting for good, while the complete .tmp sat there unread. File.Replace
+            // does the exchange in one step, so the live file is always readable.
+            var tmp = FilePath + ".tmp";
+            File.WriteAllText(tmp, serializer.Serialize(this));
+            if (File.Exists(FilePath)) File.Replace(tmp, FilePath, null);
+            else File.Move(tmp, FilePath);
+        }
+    }
+}
