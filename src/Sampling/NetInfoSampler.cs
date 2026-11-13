@@ -29,9 +29,14 @@ namespace task_monitor
         public long LinkTxBps;          // negotiated transmit link rate, bits/s
         public string LocalIp;          // IPv4 preferred, global IPv6 when there's no IPv4
         public string PublicIp;         // external what-is-my-ip lookup; null until fetched
+        public string PublicIpPrev;     // 上一次的出口 IP（变了才有值，用于「已切换」提示）
+        public string GeoLabel;         // 「中国 山东 · 电信」这类地区+运营商（可为空）
+        public DateTime PublicIpChangedAt;  // 上次发现变化的时刻（UTC）；默认值 = 从未变化
         public string PublicIpV6;       // same, over IPv6; null when no v6 connectivity
         public long GatewayRttMs = -1;  // ICMP RTT to the default gateway ("本地延迟")
         public long PublicRttMs = -1;   // ICMP RTT to the public probe ("公网延迟")
+        public string ProxyNote;        // 代理活动来源（隧道网卡名 / 「系统代理 host:port」）；null = 无。
+                                        // 仅用于界面提示「经代理」——统计口径仍是物理网卡。
 
         // Field-wise copy — PollOnce publishes an early partial snapshot, so the instance
         // it keeps filling must not be the published one (publication = never mutated).
@@ -69,24 +74,39 @@ namespace task_monitor
         // Public-IP lookup endpoints, tried in order; each answers with the caller's public
         // address as a short plain-text body (IPv4-oriented — a v6 literal doesn't match the
         // extraction regex and the next endpoint is tried).
+        // 顺序按 2026-11-13 实测（带系统代理 / 直连各 3 次）排：
+        // icanhazip 代理下 0.61s、直连 0.74s，两条路径都通，最稳；
+        // cip.cc 直连 0.20s、代理 1.39s，且响应体自带「地址 / 运营商」，排第二兼顾速度与地区；
+        // ipify 直连不通、代理 2.35s，只作最后兜底。
         private static readonly string[] PublicIpEndpoints =
         {
-            "https://api.ipify.org",
-            "https://4.ipw.cn",
             "https://ipv4.icanhazip.com",
+            "https://cip.cc/",
+            "https://api.ipify.org",
         };
 
         // IPv6 counterparts — v6-only hosts, so a machine without IPv6 connectivity simply
         // fails them all (they're only called when the adapter HAS a global v6 address).
+        // v6 顺序同样按实测：icanhazip 1.39s、api6.ipify 1.60s；代理下两者都不通
+        // （代理不转发 v6，失败即跳过，不影响任何显示）。
         private static readonly string[] PublicIpV6Endpoints =
         {
-            "https://api6.ipify.org",
-            "https://6.ipw.cn",
             "https://ipv6.icanhazip.com",
+            "https://api6.ipify.org",
         };
 
         private const int PingTimeoutMs = 1000;
         private const int HttpTimeoutMs = 3000;
+        // 出口 IP 变化检测：10 分钟才查一次，所以「切换」最多滞后一个刷新周期 —— 这是刻意的，
+        // 加频会让「轻」的定位失守。只记住上一次的 IP 与变化时刻，不引入任何新的外部服务。
+        private string _publicIpPrev;
+        private DateTime _publicIpChangedAt;
+
+        // 地区缓存：按 IP 缓存 10 分钟（cip.cc 是单点小站，别刷它）。
+        private string _geoIp;
+        private string _geoLabel;
+        private long _geoFetchedAtMs;
+
         private const int PublicIpRefreshMinutes = 10;  // re-lookup cadence on success
         private const int PublicIpRetrySeconds = 60;    // retry cadence after a failure
 
@@ -101,6 +121,27 @@ namespace task_monitor
         // (the gateway ping is LAN-only and unaffected).
         private volatile bool _publicIpLookupEnabled = true;
         // The latest published set — whole-instance swap, never mutated in place.
+
+        // 系统代理（「设置 → 网络和 Internet → 代理」/ Clash Verge 的「系统代理」开关）：
+        // 开着的表现是 HKCU\...\Internet Settings 的 ProxyEnable=1 + ProxyServer=host:port。
+        // 这种模式下没有隧道网卡，流量照走物理网卡 —— 但用户对不上账单时要知道这层存在。
+        private static string SystemProxyNote()
+        {
+            try
+            {
+                using (var key = Microsoft.Win32.Registry.CurrentUser.OpenSubKey(
+                    @"Software\Microsoft\Windows\CurrentVersion\Internet Settings"))
+                {
+                    if (key == null) return null;
+                    object enable = key.GetValue("ProxyEnable");
+                    if (!(enable is int) || (int)enable == 0) return null;
+                    string server = key.GetValue("ProxyServer") as string;
+                    return string.IsNullOrEmpty(server) ? "系统代理" : "系统代理 " + server;
+                }
+            }
+            catch { return null; }   // 读不到就当没代理：提示是锦上添花，不值得为它报错
+        }
+
         private volatile NetInfo _latest = NetInfo.Empty;
 
         // ---- poll-thread state (single-threaded below) ----
@@ -131,10 +172,22 @@ namespace task_monitor
         private const long WifiCacheTimeoutMs = 5 * 60_000L;  // same-adapter roam staleness backstop
         private volatile bool _wifiDetailsRequested;     // UI thread sets; poll thread reads-and-clears
 
+        /// <summary>唯一实例：面板上的「立即刷新」按钮要用它（见 <see cref="RequestImmediateRefresh"/>）。</summary>
+        public static NetInfoSampler Current { get; private set; }
+
         public NetInfoSampler()
         {
+            Current = this;
             _pollThread = new Thread(PollLoop) { IsBackground = true, Name = "NetInfoSampler" };
             _pollThread.Start();
+        }
+
+        /// <summary>把下一次公网 IP 查询与地区查询都拉到现在：不改变任何节奏常量，
+        /// 只是让轮询线程下一拍立刻重查（原先要等最多 10 分钟）。UI 线程可安全调用。</summary>
+        public void RequestImmediateRefresh()
+        {
+            _publicIpNextTryMs = 0;     // 让 nowMs >= _publicIpNextTryMs 成立 → 下一拍就查
+            _geoFetchedAtMs = 0;        // 地区缓存一起作废，IP 没变也会重取
         }
 
         /// <summary>The adapter to inspect (NetSampler's current selection), or null.</summary>
@@ -198,7 +251,12 @@ namespace task_monitor
                 return;
             }
 
-            var info = new NetInfo();
+            var info = new NetInfo
+            {
+                // 代理活动来源：优先隧道网卡（TUN 模式），否则看系统代理（PAC/HTTP 代理模式）。
+                // 两条路径统计口径都没变 —— 数字仍是物理网卡字节数，这里只是告知用户「经代理」。
+                ProxyNote = NetSampler.TunnelAdapterName ?? SystemProxyNote(),
+            };
             // On-demand Wi-Fi: only when the Network panel was just opened (UI thread sets the
             // flag via RequestWifiDetails). This is the ONE place on the poll path that may touch
             // the location-sensitive wlanapi — and only if the cache is stale (a hit reuses it).
@@ -229,6 +287,9 @@ namespace task_monitor
             // on a perfectly healthy connection. The copy keeps the publication immutable
             // while this instance gets its slow fields filled in.
             info.PublicIp = _publicIp;
+            info.PublicIpPrev = _publicIpPrev;
+            info.PublicIpChangedAt = _publicIpChangedAt;
+            info.GeoLabel = _geoLabel;
             info.PublicIpV6 = hasGlobalV6 ? _publicIpV6 : null;
             _latest = info.ShallowCopy();
 
@@ -255,11 +316,23 @@ namespace task_monitor
                 _publicIpNextTryMs = nowMs + (ip != null || ip6 != null
                     ? PublicIpRefreshMinutes * 60_000L
                     : PublicIpRetrySeconds * 1000L);
-                if (ip != null) _publicIp = ip;
+                if (ip != null)
+                {
+                    if (_publicIp != null && !string.Equals(_publicIp, ip, StringComparison.Ordinal))
+                    {
+                        _publicIpPrev = _publicIp;
+                        _publicIpChangedAt = DateTime.UtcNow;
+                    }
+                    _publicIp = ip;
+                }
                 if (ip6 != null) _publicIpV6 = ip6;
             }
             if (!hasGlobalV6) _publicIpV6 = null;   // v6 went away — don't show a stale one
+            MaybeFetchGeo(nowMs);                   // 地区：失败静默，不影响 IP
             info.PublicIp = _publicIp;
+            info.PublicIpPrev = _publicIpPrev;
+            info.PublicIpChangedAt = _publicIpChangedAt;
+            info.GeoLabel = _geoLabel;
             info.PublicIpV6 = _publicIpV6;
 
             _latest = info;
@@ -434,6 +507,68 @@ namespace task_monitor
             catch { return -1; }
         }
 
+        // ── 地区：复用 cip.cc 的「地址 / 运营商」，按 IP 缓存 10 分钟 ──────────────────
+        // 只在 IP 变了或缓存过期时查一次；失败一律静默（地区是锦上添花，不能影响 IP 显示）。
+        // 响应是键值纯文本（制表符分隔）：
+        //     IP<TAB>: 182.33.158.242
+        //     地址<TAB>: 中国 山东
+        //     运营商<TAB>: 电信
+        private const int GeoCacheMinutes = 10;
+        private const int GeoTimeoutMs = 2500;
+
+        private void MaybeFetchGeo(long nowMs)
+        {
+            if (!_publicIpLookupEnabled) return;
+            if (_publicIp == null) return;
+            bool sameIp = string.Equals(_geoIp, _publicIp, StringComparison.Ordinal);
+            if (sameIp && nowMs - _geoFetchedAtMs < GeoCacheMinutes * 60_000L) return;
+
+            string label = FetchGeo(_publicIp);
+            _geoFetchedAtMs = nowMs;                  // 失败也记时间，避免每次轮询都重试
+            if (label == null) return;
+            _geoIp = _publicIp;
+            _geoLabel = label;
+        }
+
+        /// <summary>「中国 山东 · 电信」；解析不到返回 null。</summary>
+        private static string FetchGeo(string ip)
+        {
+            try
+            {
+                var req = (HttpWebRequest)WebRequest.Create("https://cip.cc/" + Uri.EscapeDataString(ip));
+                req.Timeout = GeoTimeoutMs;
+                req.ReadWriteTimeout = GeoTimeoutMs;
+                req.UserAgent = "task_monitor";
+                string body;
+                using (var resp = req.GetResponse())
+                using (var reader = new StreamReader(resp.GetResponseStream()))
+                    body = reader.ReadToEnd();
+
+                string addr = ExtractField(body, "地址");
+                string isp = ExtractField(body, "运营商");
+                if (string.IsNullOrWhiteSpace(addr)) return null;
+                addr = addr.Trim();
+                isp = isp == null ? null : isp.Trim();
+                return string.IsNullOrWhiteSpace(isp) ? addr : addr + " · " + isp;
+            }
+            catch { return null; }
+        }
+
+        // 从「键 : 值」里取值：cip.cc 用制表符分隔，冒号两侧空格数量不固定。
+        private static string ExtractField(string body, string key)
+        {
+            string[] lines = body.Split('\n');
+            foreach (string line in lines)
+            {
+                int i = line.IndexOf(key, StringComparison.Ordinal);
+                if (i < 0) continue;
+                int colon = line.IndexOf(':', i + key.Length);
+                if (colon < 0) continue;
+                return line.Substring(colon + 1).Trim();
+            }
+            return null;
+        }
+
         // First endpoint that answers with an IPv4 literal wins; null when all fail. Never throws.
         private static string FetchPublicIp()
         {
@@ -471,6 +606,10 @@ namespace task_monitor
                     req.Timeout = HttpTimeoutMs;
                     req.ReadWriteTimeout = HttpTimeoutMs;
                     req.UserAgent = "task_monitor";
+                    // v6 查询必须绕开系统代理：HTTP 代理只转发 v4（CONNECT 到 v4 的域名），
+                    // 走代理时 v6 端点必然失败 —— 而失败时 _publicIpV6 会保留旧值，
+                    // 表现为「公网 IPv6 一直是那个地址，从不更新」。直连 v6 才是它的真实归属。
+                    req.Proxy = null;
                     using (var resp = req.GetResponse())
                     using (var reader = new StreamReader(resp.GetResponseStream()))
                     {

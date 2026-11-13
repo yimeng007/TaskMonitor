@@ -14,7 +14,8 @@ namespace task_monitor
         public UpdateAvailableDialog(string current, string latestTag)
         {
             InitializeComponent();
-            MessageText.Text = $"发现新版本 {latestTag}（当前版本 v{current}）。是否前往发布页下载更新？";
+            MessageText.Text = $"上游有新版 {latestTag}（当前版本 v{current}）。\n"
+                + "⚠ 那是官方原版，装上去会覆盖本修改版的所有改动。";
         }
 
         private void Update_Click(object sender, RoutedEventArgs e)

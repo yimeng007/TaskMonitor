@@ -39,6 +39,16 @@
                     <ui:FontIcon x:Name="PublicIpEyeIcon" FontSize="14"
                                  Icon="{x:Static ui:FluentSystemIcons.Eye_16_Regular}" />
                 </ToggleButton>
+                <!-- 立即刷新公网 IP / 地区：公网 IP 平时 10 分钟才查一次，换了代理节点要等很久才知道；
+                     这个按钮把下一次查询拉到现在（不改变任何节奏常量）。与眼睛按钮同款 28×28 热区。 -->
+                <Button x:Name="RefreshIpButton" Margin="2,0,0,0"
+                        Style="{StaticResource ChromeButtonStyle}"
+                        VerticalAlignment="Center"
+                        Click="RefreshIp_Click"
+                        ToolTip="立即重查公网 IP 与地区">
+                    <ui:FontIcon FontSize="14"
+                                 Icon="{x:Static ui:FluentSystemIcons.ArrowSync_20_Regular}" />
+                </Button>
             </StackPanel>
             <ikw:SimpleStackPanel HorizontalAlignment="Right" VerticalAlignment="Center">
                 <TextBlock x:Name="NetUpLine" FontSize="14" />

@@ -15,7 +15,7 @@
          (see the "本分支相对原版的改动" section at the top of README.md). -->
     <!-- 末位 2 = **个人修改版**（官方版末位是 1）；前面的日期跟随构建日。
          2026-11-12 那次构建跨过了零点，所以从 2026.11.11.2 升到 2026.11.12.2。 -->
-    <Version>2026.11.12.2</Version>
+    <Version>2026.11.14.2</Version>
     <!-- The SDK stamps InformationalVersion with the commit hash unless this is off —
          关于页/更新检测需要纯净的 "1.0.0"。 -->
     <IncludeSourceRevisionInInformationalVersion>false</IncludeSourceRevisionInInformationalVersion>

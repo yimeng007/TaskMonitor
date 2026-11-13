@@ -73,7 +73,9 @@ namespace task_monitor
         /// runs on a pool thread and any dialog is marshaled to the UI thread.</summary>
         public static void CheckOnce(AppSettings config, Action saveConfig)
         {
-            if (config.UpdateCheckEnabled == false) return;   // 设置 → 通用 → 检查更新 off
+            // 个人修改版：默认**不**检查更新（null = 关）。开着它只会查到上游官方版，
+            // 点了「立即更新」就会把本修改版覆盖掉 —— 要让用户显式开启才查。
+            if (config.UpdateCheckEnabled != true) return;
             QueueCheck(config, saveConfig, canRetry: true);
         }
 

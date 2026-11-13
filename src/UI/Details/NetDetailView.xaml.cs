@@ -172,13 +172,14 @@ namespace task_monitor
             RateIndentRun.Text = BandCell.Visibility == Visibility.Visible ? "频段： " : "";
             // The cell trims a long SSID — the tooltip carries the full text (+ adapter).
             ConnCell.ToolTip = string.IsNullOrEmpty(s.NetAdapterName)
-                ? connText
-                : connText + "\n" + s.NetAdapterName;
+                ? BuildConnTip(info, connText)
+                : BuildConnTip(info, connText) + "\n" + s.NetAdapterName;
             // LocalIp falls back to a global v6 address when the adapter has no v4 — the
             // label says which one it's showing (公网 IPv4 is always v4: its endpoints are).
             LocalIpLabel.Text = info.LocalIp?.IndexOf(':') >= 0 ? "本机 IPv6：" : "本机 IPv4：";
             SetIpButton(LocalIpButton, info.LocalIp);
             SetIpButton(PublicIpButton, info.PublicIp);
+            UpdatePublicIpChangeMark(info);
             // Full-width v6 row: absent (no v6 connectivity / lookup pending) → the whole
             // cell collapses, like the Wi-Fi cells — a permanent "—" row would just be a
             // hole on v4-only networks.
@@ -221,12 +222,24 @@ namespace task_monitor
 
         // 连接 cell: the type with the SSID in parens — "WLAN (LineSoft-Main-2)" /
         // "有线" / "未连接".
+        // 检测到隧道网卡（VPN / 代理 TUN）时追加「经代理」：统计口径仍是物理网卡，
+        // 数字里含代理的加密开销，与运营商账单对不上时这是第一嫌疑人 —— 先告知，少一轮排查。
+        // 没开代理就一个字都不加，不做常驻提示。
         private static string BuildConnText(NetInfo info)
         {
             if (string.IsNullOrEmpty(info.ConnectionType)) return "未连接";
-            return string.IsNullOrEmpty(info.Ssid)
+            string core = string.IsNullOrEmpty(info.Ssid)
                 ? info.ConnectionType
                 : $"{info.ConnectionType} ({info.Ssid})";
+            return string.IsNullOrEmpty(info.ProxyNote) ? core : core + " · 经代理";
+        }
+
+        // 悬挂在「连接」格上的完整解释：只在有隧道网卡时补充，否则沿用原有文案。
+        private static string BuildConnTip(NetInfo info, string connText)
+        {
+            if (string.IsNullOrEmpty(info.ProxyNote)) return connText;
+            return connText + "\n隧道网卡：" + info.ProxyNote
+                + "\n统计的是物理网卡（含代理加密开销），不是隧道网卡的字节数。";
         }
 
         // A labeled cell (标签：值) whose value can be absent: absent → the whole cell
@@ -277,6 +290,55 @@ namespace task_monitor
         // survives the flash cycle. Every tooltip leads with the one-word action "复制";
         // echoAddress appends the full address on a second line (untrimmed readout) —
         // suppressed while masked, or the tooltip would leak the hidden address.
+        // 出口 IP 变化提示：公网 IP 每 10 分钟才重查一次，变化最多晚 10 分钟被发现；
+        // 发现后只强调 CHANGE_MARK_MINUTES 分钟。
+        //
+        // **为什么不用「IP 后面加 · 已切换」**：那一行是横向 StackPanel，不会换行、超出直接裁掉。
+        // 实测（368/328 布局，字体 12）：列宽 164 px，「公网 IPv4：143.246.48.3」已占 135.8 px，
+        // 再加 4 个字要 180.7 px —— 超 16.7 px 会被切掉一半；255.255.255.255 这类更长的会超 37.8 px。
+        // 所以改用「零宽度」表达：文字本身变强调色 + tooltip 写「原 → 现」，一个字都不额外占位。
+        private const int ChangeMarkMinutes = 5;
+        private static readonly Brush IpChangedBrush = CreateIpChangedBrush();
+
+        private static Brush CreateIpChangedBrush()
+        {
+            var b = new SolidColorBrush(Color.FromRgb(0xE8, 0x6C, 0x00));   // 橙：明暗主题下都够醒目
+            b.Freeze();
+            return b;
+        }
+
+        // 立即重查公网 IP 与地区：只把「下一次查询」提前到现在，不新增任何定时器。
+        // 采样器在后台线程跑，下一拍（≤1 秒）就会带着新值发布上来，面板随即刷新。
+        private void RefreshIp_Click(object sender, RoutedEventArgs e)
+        {
+            try { NetInfoSampler.Current?.RequestImmediateRefresh(); }
+            catch { /* 采样器已停（退出中）：点一下没反应，无害 */ }
+        }
+
+        private void UpdatePublicIpChangeMark(NetInfo info)
+        {
+            bool recent = info.PublicIpChangedAt != default(DateTime)
+                && (DateTime.UtcNow - info.PublicIpChangedAt).TotalMinutes < ChangeMarkMinutes
+                && !string.IsNullOrEmpty(info.PublicIpPrev)
+                && !string.IsNullOrEmpty(info.PublicIp);
+
+            if (PublicIpButton.Content is TextBlock tb)
+                tb.Foreground = recent ? IpChangedBrush : GetIpNormalBrush();
+
+            // tooltip 三部分：IP 本身 → 地区/运营商（有才给）→ 变化说明（刚变才有）。
+            // 地区来自 cip.cc，可能为空；为空就少一行，不留空行。
+            string tip = IsMasked(PublicIpButton) ? "复制" : "复制\n" + (info.PublicIp ?? "");
+            if (!string.IsNullOrEmpty(info.GeoLabel))
+                tip += "\n" + info.GeoLabel;
+            if (recent)
+                tip += "\n出口 IP 已变化：原 " + info.PublicIpPrev + " → 现 " + info.PublicIp;
+            PublicIpButton.ToolTip = string.IsNullOrEmpty(info.PublicIp) ? null : tip;
+        }
+
+        // 与 XAML 里绑定的那个前景色保持一致（正常态）。
+        private Brush GetIpNormalBrush()
+            => (Brush)PublicIpButton.GetValue(TextElement.ForegroundProperty);
+
         private void SetIpButton(ContentControl btn, string value, bool echoAddress = false)
         {
             bool has = !string.IsNullOrEmpty(value);

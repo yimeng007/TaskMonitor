@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Globalization;
 using System.Windows;
 using System.Windows.Media;
@@ -35,14 +36,75 @@ namespace task_monitor
                 nameof(UpValues),
                 typeof(IReadOnlyList<double?>),
                 typeof(NetThroughputChart),
-                new FrameworkPropertyMetadata(null, FrameworkPropertyMetadataOptions.AffectsRender));
+                new FrameworkPropertyMetadata(null, FrameworkPropertyMetadataOptions.AffectsRender,
+                    OnUpValuesChanged));
 
         public static readonly DependencyProperty DownValuesProperty =
             DependencyProperty.Register(
                 nameof(DownValues),
                 typeof(IReadOnlyList<double?>),
                 typeof(NetThroughputChart),
-                new FrameworkPropertyMetadata(null, FrameworkPropertyMetadataOptions.AffectsRender));
+                new FrameworkPropertyMetadata(null, FrameworkPropertyMetadataOptions.AffectsRender,
+                    OnDownValuesChanged));
+
+        // ---- 刻度峰值衰减 (2026-11-13) ----
+        // 原来是「窗口内最大值」直接当刻度：一次尖峰（例如 3 秒下完一个 ISO）滚出 60 点窗口后，
+        // 刻度会**瞬间塌到新的小值**，整条曲线在下一帧突然被放大 —— 看起来像「刷一下变了」。
+        // 现在刻度是**带衰减的峰值**：上升立刻跟随（尖峰第一帧就顶到位，不会被截平），下降按时间衰减。
+        //
+        // **必须按「秒」衰减，不能按「赋值次数」**（2026-11-13 录屏+日志实测定下来的）：
+        // UpValues 由详情视图的 Refresh 写入，而 Refresh 的频率并不等于采样频率
+        // （打开弹窗、悬停、tooltip 刷新都会再写一次）。第一版写成「每次赋值 ×0.95」，
+        // 实测 14 秒掉了 68%（应为 49%）—— 相当于衰减速度快了一倍。
+        // 现在用 Stopwatch 计算真实间隔，写入频率再怎么变都不影响速率。
+        //
+        // **两段式衰减**（同日第二版，用户「你决定」）：单纯等比衰减无法兼顾两端 ——
+        // 从 81 MB/s 收到 1 KB/s 是 4.8 个数量级，0.95 要走 218 秒（曲线贴底不可读）；
+        // 压到 0.80 虽只要 48 秒，但正常场景（刻度只比窗口高一点）也会每拍掉 20%，成了抽搐。
+        // 所以：① 保底每秒降 5%（平滑）；② 差距大时按差距的 40% 追（快速收敛）；
+        // 取更快的那个，再以窗口最大值为地板。落差 4.8 个数量级约 22 秒追平。
+        private const double PeakFloorDecayPerSecond = 0.95;   // 保底：每秒至少降 5%
+        private const double PeakGapCatchUpPerSecond = 0.40;   // 加速：每秒追平 40% 的剩余差距
+        private const double PeakDecayMaxSeconds = 10;         // 单次最长补算 10 秒（长时间无刷新后不要一帧塌到底）
+
+        private double _upPeak, _downPeak;
+        private long _upStamp, _downStamp;                // Stopwatch 时间戳，0 = 还没写过
+
+        private static void OnUpValuesChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
+        {
+            var chart = (NetThroughputChart)d;
+            chart.Advance(ref chart._upPeak, ref chart._upStamp, e.NewValue as IReadOnlyList<double?>);
+        }
+
+        private static void OnDownValuesChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
+        {
+            var chart = (NetThroughputChart)d;
+            chart.Advance(ref chart._downPeak, ref chart._downStamp, e.NewValue as IReadOnlyList<double?>);
+        }
+
+        private void Advance(ref double peak, ref long stamp, IReadOnlyList<double?> values)
+        {
+            long now = Stopwatch.GetTimestamp();
+            double dt = stamp == 0 ? 1.0 : (now - stamp) / (double)Stopwatch.Frequency;
+            stamp = now;
+            peak = NextPeak(peak, MaxOf(values), dt);
+        }
+
+        /// <summary>上升立即跟随；下降取「保底 5%/秒」与「追平 40% 差距/秒」中更快的一个，
+        /// 并以窗口最大值为地板；历史被清空（窗口最大值 ≤ 0）时归零。</summary>
+        internal static double NextPeak(double previous, double windowMax, double dtSeconds)
+        {
+            if (windowMax <= 0) return 0;            // 历史被清空：没有数据就没有峰值
+            if (windowMax >= previous) return windowMax;
+            if (dtSeconds < 0) dtSeconds = 0;
+            if (dtSeconds > PeakDecayMaxSeconds) dtSeconds = PeakDecayMaxSeconds;
+
+            double byFloor = previous * Math.Pow(PeakFloorDecayPerSecond, dtSeconds);
+            double gapFactor = 1.0 - Math.Pow(1.0 - PeakGapCatchUpPerSecond, dtSeconds);
+            double byGap = previous - (previous - windowMax) * gapFactor;
+            double next = Math.Min(byFloor, byGap);   // 更快的那个
+            return next > windowMax ? next : windowMax;
+        }
 
         public IReadOnlyList<double?> UpValues
         {
@@ -229,12 +291,14 @@ namespace task_monitor
 
             DrawGrid(dc, w, h);
 
-            // Each half scales INDEPENDENTLY to its own series' window-peak: upload fills the
+            // Each half scales INDEPENDENTLY to its own series' scale ceiling: upload fills the
             // upper half against the upload peak, download fills the lower half against the
             // download peak. Up and down usually differ by orders of magnitude, so a shared
             // scale would flatten the smaller one — each gets its own auto-scale instead.
-            double upMax = MaxOf(UpValues);
-            double downMax = MaxOf(DownValues);
+            // The ceiling is the DECAYING peak maintained by OnUpValuesChanged/OnDownValuesChanged
+            // (rises instantly, falls ~3% per sample), not the raw window max — see the field notes.
+            double upMax = _upPeak;
+            double downMax = _downPeak;
             double upScale = upMax > 0 ? upMax : 1;     // fallback to 1 → flat line on centerline
             double downScale = downMax > 0 ? downMax : 1;
 

@@ -356,8 +356,8 @@ namespace task_monitor
         public string ClashApiSecret { get; set; }
 
         /// <summary>
-        /// 启动时检查更新 (设置 → 通用): null = on (the default — only the disabled state
-        /// is ever written). Once per launch <see cref="UpdateChecker"/> reads the latest
+        /// 启动时检查更新 (设置 → 通用): **null = off**（个人修改版的默认）。
+        /// 指向上游时会有「覆盖本修改版」的风险，所以要用户显式开启才写 true。 Once per launch <see cref="UpdateChecker"/> reads the latest
         /// release tag from the configured <see cref="UpdateSource"/> and prompts when a
         /// newer version exists. Takes effect on the next startup.
         /// </summary>
@@ -423,8 +423,8 @@ namespace task_monitor
 
         /// <summary>
         /// 累计流量的单位是否锁定在 GB（设置 → 外观 → 固定按 GB 显示）。
-        /// true = 超过 1024 GB 也不换算成 TB/PB，一直用 GB 显示（只换显示单位，数值仅供参照，不作对账依据）；
-        /// null/false = 正常自动升档 GB → TB → PB。默认关。
+        /// true = 超过 1024 GB 也不换算成 TB，一直用 GB 显示（只换显示单位，数值仅供参照，不作对账依据）；
+        /// null/false = 正常自动升档 GB → TB。默认关。
         /// </summary>
         public bool? NetUsageFixedGb { get; set; }
 

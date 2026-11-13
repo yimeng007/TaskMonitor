@@ -245,6 +245,9 @@ namespace task_monitor
             Func<SystemSnapshot> snapshotProvider)
         {
             InitializeComponent();
+            // 版本水印（「通用」页底部那行淡字）：用运行时版本号，改版本不必动 XAML。
+            VersionWatermark.Text = "个人修改版 v" + VersionInfo.Current
+                + " · 非上游发布 · 上游 linesoft2/TaskMonitor（Apache-2.0）";
             _placementChanged = placementChanged;
             _displaySelectionChanged = displaySelectionChanged;
             _autoStartChanged = autoStartChanged;

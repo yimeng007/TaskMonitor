@@ -91,7 +91,7 @@ namespace task_monitor
         public static volatile bool ShowToday = false;
 
         /// <summary>
-        /// 累计流量的单位是否锁定在 GB。true = 超过 1024 GB 也不换算成 TB/PB，
+        /// 累计流量的单位是否锁定在 GB。true = 超过 1024 GB 也不换算成 TB，
         /// 一直用 GB 显示（对账时和运营商账单同口径）；false = 正常自动升档。
         /// 跟上面两个开关一样是静态字段，由设置页写入、NetDetailView 每个 tick 读取。
         /// </summary>

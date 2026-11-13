@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Runtime.InteropServices;
+using System.Text;
 using System.Threading;
 using DirectN;
 
@@ -3503,7 +3504,6 @@ namespace task_monitor
         // widget INSIDE the work area, so "flush against the edge" (distance 0) is easy to
         // hit deliberately and a hand-width gap stays undocked.
         private const int EdgeSnapDip = 8;
-
         // How much of the widget (DIP) stays on screen while hidden — the hover target
         // that peeks it back out.
         private const int EdgeStripDip = 8;
@@ -4168,16 +4168,23 @@ namespace task_monitor
                     s.DComp?.Object?.Commit();   // null while the device is down
                     Draw(s);
                 }
-                DumpGeometryIfChanged(hwnd, s, taskbarRect);
-
                 var (_, yRel, xRelV) = CalcPositionVertical(s.TaskbarHwnd, taskbarRect, bandW, bandX,
                     s.PhysicalWidth, s.PhysicalHeight, s.Dpi);
                 s.Owner.PublishLayout(true, s.AvailWidthDip);
-                if (!force && xRelV == s.LastPlaceX && yRel == s.LastPlaceY) return;
+                if (!force && xRelV == s.LastPlaceX && yRel == s.LastPlaceY)
+                {
+                    // Position already applied — the dump is accurate here.
+                    DumpGeometryIfChanged(hwnd, s, taskbarRect);
+                    return;
+                }
                 Logger.Debug($"重定位（竖直锚点{(force ? "，强制" : "")}）：({s.LastPlaceX},{s.LastPlaceY})→({xRelV},{yRel})，尺寸={s.PhysicalWidth}x{s.PhysicalHeight}");
                 s.LastPlaceX = xRelV;
                 s.LastPlaceY = yRel;
                 WindowInterop.MoveWindow(hwnd, xRelV, yRel, s.PhysicalWidth, s.PhysicalHeight, true);
+                // AFTER the move: dumping before it read the PREVIOUS window rect, which made
+                // every orientation flip look like a 46x257 overlay parked off-screen at the
+                // new anchor — a phantom "1 秒错乱" that never existed (2026-11-12).
+                DumpGeometryIfChanged(hwnd, s, taskbarRect);
                 return;
             }
 
@@ -4207,8 +4214,6 @@ namespace task_monitor
                 }
             }
 
-            DumpGeometryIfChanged(hwnd, s, taskbarRect);
-
             int taskbarWidth = taskbarRect.right - taskbarRect.left;
             var (_, xRel) = CalcPosition(s.TaskbarHwnd, taskbarRect, taskbarWidth, s.PhysicalWidth, s.Dpi,
                 s.Owner._onLeft, s.Owner._snapToStart);
@@ -4216,19 +4221,58 @@ namespace task_monitor
             // The anchor may be unchanged while the band height changes. Skipping on X/Y alone
             // resizes only the back buffer and leaves the startup-height HWND clipped.
             if (!force && xRel == s.LastPlaceX && bandY == s.LastPlaceY
-                && s.PhysicalWidth == s.LastPlaceW && s.PhysicalHeight == s.LastPlaceH) return;
+                && s.PhysicalWidth == s.LastPlaceW && s.PhysicalHeight == s.LastPlaceH)
+            {
+                DumpGeometryIfChanged(hwnd, s, taskbarRect);   // already applied — accurate
+                return;
+            }
+            // 跟紧，不迟滞：居中任务栏增减图标会让 Start 平移半个图标（≈22px），
+            // 曾经试过「连续 2 拍稳定才移动」来压这个抖动，实测体验更差（慢一拍），
+            // 与本程序「轻、快、跟手」的定位冲突，已回退（2026-11-12 用户实测反馈）。
             Logger.Debug($"重定位（Win11 锚点{(force ? "，强制" : "")}）：xRel {s.LastPlaceX}→{xRel}，y {s.LastPlaceY}→{bandY}，尺寸={s.PhysicalWidth}x{s.PhysicalHeight}");
+            // 锚点输入快照：位置一变就记录它依据的原始矩形。没有这一行，"xRel 887→865→887"
+            // 这种 22px 级抖动只能靠猜是谁在动（Start 按钮 / 托盘 / 对齐方式 / Widgets 预留）。
+            LogAnchorInputs(s.TaskbarHwnd, taskbarRect, s.Owner._onLeft, s.Owner._snapToStart);
             s.LastPlaceX = xRel;
             s.LastPlaceY = bandY;
             s.LastPlaceW = s.PhysicalWidth;
             s.LastPlaceH = s.PhysicalHeight;
             WindowInterop.MoveWindow(hwnd, xRel, bandY, s.PhysicalWidth, s.PhysicalHeight, true);
+            // After the move — see the note in the vertical branch: a pre-move dump reports the
+            // PREVIOUS rect and reads like a misplaced overlay.
+            DumpGeometryIfChanged(hwnd, s, taskbarRect);
         }
 
         // Placement diagnostics: dump the full geometry whenever the taskbar's or our own
         // rect CHANGES (this runs every tick — change-gated so the steady state stays quiet).
         // Catches external nudges (taskbar mods) and confirms the tracking resize above
         // actually landed.
+        private static void LogAnchorInputs(IntPtr taskbar, WindowInterop.RECT taskbarRect,
+            bool onLeft, bool snapToStart)
+        {
+            var sb = new StringBuilder();
+            sb.Append("锚点输入：任务栏宽=").Append(taskbarRect.right - taskbarRect.left);
+
+            IntPtr start = FindClassChild(taskbar, "Start");
+            if (start != IntPtr.Zero && TryGetWindowRectGuarded(start, 300, out var sr))
+                sb.Append("，Start=(").Append(sr.left).Append(',').Append(sr.top).Append(")-(")
+                  .Append(sr.right).Append(',').Append(sr.bottom).Append(") 宽").Append(sr.right - sr.left);
+            else
+                sb.Append("，Start=缺失");
+
+            IntPtr tray = WindowInterop.FindWindowExW(taskbar, IntPtr.Zero, "TrayNotifyWnd", null);
+            if (tray != IntPtr.Zero && TryGetWindowRectGuarded(tray, 300, out var tr))
+                sb.Append("，托盘左=").Append(tr.left).Append(" 宽").Append(tr.right - tr.left);
+            else
+                sb.Append("，托盘=缺失");
+
+            sb.Append("，居中=").Append(IsTaskbarCenterAligned())
+              .Append("，Widgets=").Append(IsWidgetsButtonShown())
+              .Append("，onLeft=").Append(onLeft)
+              .Append("，snapStart=").Append(snapToStart);
+            Logger.Debug(sb.ToString());
+        }
+
         private static void DumpGeometryIfChanged(IntPtr hwnd, RenderState s, WindowInterop.RECT taskbarRect)
         {
             if (WindowInterop.GetWindowRect(hwnd, out var overlayRect)
@@ -4264,10 +4308,54 @@ namespace task_monitor
             IntPtr mon = WindowInterop.MonitorFromWindow(taskbar, WindowInterop.MONITOR_DEFAULTTONEAREST);
             var mi = new WindowInterop.MONITORINFO { cbSize = (uint)Marshal.SizeOf<WindowInterop.MONITORINFO>() };
             if (mon == IntPtr.Zero || !WindowInterop.GetMonitorInfoW(mon, ref mi)) return;
-            int bandTop = Math.Max(mi.rcWork.bottom, taskbarRect.top);
-            int bandBottom = Math.Min(mi.rcMonitor.bottom, taskbarRect.bottom);
+            ComputeBand(mi.rcMonitor, mi.rcWork, taskbarRect, out height, out yOffset);
+        }
+
+        // The pure part of TaskbarBand — no HWND, so it can be exercised against synthetic
+        // rects (top-docked 任务栏 is not reachable on every OS build and must not be
+        // shipped on faith).
+        //
+        // A horizontal taskbar reserves a strip at ITS OWN screen edge:
+        //   bottom-docked → [work.bottom, monitor.bottom)
+        //   top-docked    → [monitor.top, work.top)
+        // Both are then intersected with the taskbar's window rect. When the window is the
+        // reservation (stock taskbar) vis equals the full height and nothing is adjusted;
+        // when a taskbar-height mod leaves the window TALLER than the reservation, the
+        // overlay shrinks to the reserved strip and offsets to sit inside it — the surplus
+        // strip floats over the desktop where maximized windows cover it.
+        //
+        // Top-docked is detected the same way GetTaskbarEdge does it (±4px tolerance), so
+        // the two never disagree about which edge the taskbar is on.
+        internal static void ComputeBand(WindowInterop.RECT monitor, WindowInterop.RECT work,
+            WindowInterop.RECT taskbarRect, out int height, out int yOffset)
+        {
+            int fullH = taskbarRect.bottom - taskbarRect.top;
+            height = fullH;
+            yOffset = 0;
+            if (fullH <= 0) return;
+
+            // Vertical (side-docked) taskbars own no strip along Y — their reservation is
+            // across the bar and is handled by TaskbarBandCross.
+            int fullW = taskbarRect.right - taskbarRect.left;
+            if (fullW < fullH) return;
+
+            const int tol = 4;
+            bool topDocked = taskbarRect.top <= monitor.top + tol;
+
+            int bandTop, bandBottom;
+            if (topDocked)
+            {
+                bandTop = Math.Max(monitor.top, taskbarRect.top);
+                bandBottom = Math.Min(work.top, taskbarRect.bottom);
+            }
+            else
+            {
+                bandTop = Math.Max(work.bottom, taskbarRect.top);
+                bandBottom = Math.Min(monitor.bottom, taskbarRect.bottom);
+            }
+
             int vis = bandBottom - bandTop;
-            if (vis > 0 && vis < height)
+            if (vis > 0 && vis < fullH)
             {
                 height = vis;
                 yOffset = bandTop - taskbarRect.top;

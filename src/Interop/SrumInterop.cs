@@ -46,10 +46,6 @@ namespace task_monitor
         [DllImport("kernel32.dll", SetLastError = true)]
         internal static extern IntPtr GetProcAddress(IntPtr hModule, [MarshalAs(UnmanagedType.LPStr)] string lpProcName);
 
-        [DllImport("kernel32.dll", SetLastError = true)]
-        [return: MarshalAs(UnmanagedType.Bool)]
-        internal static extern bool FreeLibrary(IntPtr hModule);
-
         // Native: void CALLBACK SRU_CALLBACK(void* Context, _SRU_STATS_RECORD_SET* RecordSet)
         [UnmanagedFunctionPointer(CallingConvention.StdCall)]
         internal delegate void SruStatsCallback(IntPtr context, IntPtr recordSet);

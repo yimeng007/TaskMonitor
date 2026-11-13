@@ -118,7 +118,9 @@ namespace task_monitor
             RefreshWindows();
             foreach (var entry in entries)
             {
-                if (entry.Thread != null && entry.Thread.IsAlive && !entry.Thread.Join(1000))
+                // 300ms 足够让正常退出走完；覆盖层线程都是 IsBackground=true，
+                // 即使没等到也会随进程结束，不存在滞留风险。原来 1000ms 让退出手感发黏。
+                if (entry.Thread != null && entry.Thread.IsAlive && !entry.Thread.Join(300))
                     Logger.Warn($"覆盖层线程退出等待超时：{entry.Id}");
             }
         }

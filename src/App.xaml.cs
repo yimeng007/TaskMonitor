@@ -177,9 +177,22 @@ namespace task_monitor
             UpdateChecker.CheckOnce(_config, TrySaveConfig);
         }
 
-        protected override void OnExit(ExitEventArgs e)
+        // 退出：先把菜单收起来，再让出一帧，最后才真正 Shutdown。
+        //
+        // 原先是 exit.Click → Shutdown() 直连，但 Shutdown() 会**同步**进入 OnExit：
+        // 摘托盘、停采样、存配置、以及对每个覆盖层线程 Join 至多 1 秒 —— UI 线程被占住的这段，
+        // 菜单的收起动画卡在半透明状态，而覆盖层在自己的线程上早没了，于是看起来
+        // 「任务栏先消失、菜单慢半拍」。Dispatchers 在 Background 优先级低于 Render，
+        // 所以 BeginInvoke 到 Background 能保证菜单先把这一帧画完。
+        private void BeginShutdown()
         {
-            Logger.Info("退出");
+            try { if (_taskbarMenu != null) _taskbarMenu.IsOpen = false; } catch { }
+            try { _tray?.Dispose(); _tray = null; } catch { }   // 托盘菜单与任务栏菜单是同一个
+            Dispatcher.BeginInvoke(DispatcherPriority.Background, new Action(Shutdown));
+        }
+
+        protected override void OnExit(ExitEventArgs e)
+        {            Logger.Info("退出");
             _stopping = true;
             // 先摘掉托盘图标：留着会在托盘里停一个点不动的死图标，直到用户划过它。
             _tray?.Dispose();
@@ -858,7 +871,7 @@ namespace task_monitor
                 EnumerateNetAdapters(), OnNetAdapterChanged,
                 _config.PublicIpEnabled != false, OnPublicIpLookupChanged,
                 _config.ClashEnabled != false, _config.ClashApiAddress, _config.ClashApiSecret, OnClashApiChanged,
-                _config.UpdateCheckEnabled != false, OnUpdateCheckChanged,
+                _config.UpdateCheckEnabled == true, OnUpdateCheckChanged,
                 UpdateSourceIndexOf(_config), OnUpdateSourceChanged,
                 // The About page's live waveform reads the same latest snapshot.
                 () => _sampling.LatestSnapshot);
@@ -1361,7 +1374,7 @@ namespace task_monitor
         // written). Takes effect on the next startup (the check runs once per launch).
         private void OnUpdateCheckChanged(bool on)
         {
-            _config.UpdateCheckEnabled = on ? (bool?)null : false;
+            _config.UpdateCheckEnabled = on ? (bool?)true : false;
             TrySaveConfig();
         }
 
@@ -1500,7 +1513,7 @@ namespace task_monitor
                 Icon = new FontIcon { Icon = FluentSystemIcons.DoorArrowLeft_16_Regular, FontSize = 16 },
             };
             exit.SetResourceReference(FrameworkElement.StyleProperty, "DefaultMenuItemStyle");
-            exit.Click += (s, e) => Shutdown();
+            exit.Click += (s, e) => BeginShutdown();
 
             _taskbarMenu = new ContextMenu();
             _taskbarMenu.SetResourceReference(FrameworkElement.StyleProperty, "DefaultContextMenuStyle");
