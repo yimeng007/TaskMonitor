@@ -1021,6 +1021,7 @@ namespace task_monitor
             }
             else
             {
+                HideAnchorLockedHint();   // 解锁后提示不该再挂着
                 // 解锁：界面恢复成用户真正选过的值，并让覆盖层按 anchor 重摆一次。
                 // 配置值在锁定期间**没被改过**，所以这里只是把界面和实际行为重新对齐。
                 if (OnLeftSwitch.IsOn != _configuredOnLeft)
@@ -1038,15 +1039,89 @@ namespace task_monitor
         /// 锁死时用户仍然可以点开关 —— 点了立刻弹回并说明原因。真的把 IsEnabled 设成 false
         /// 就点不动了，用户只会觉得「控件坏了」，得不到任何解释。
         /// </summary>
-        private void ShowAlignmentLockedDialog()
+        // 左对齐锁定提示：页内条，8 秒自动收起（可点 × 提前关）。
+        // 原来是 System.Windows.MessageBox —— 模态、打断操作、与设置页的 Fluent 风格不搭，2026-11-14 换掉。
+        private System.Windows.Threading.DispatcherTimer _anchorHintTimer;
+
+        // 动画时长：150ms —— 观感上「滑出来」而不是「蹦出来」。
+        private static readonly TimeSpan HintAnimDuration = TimeSpan.FromMilliseconds(150);
+
+        private void ShowAnchorLockedHint()
         {
-            System.Windows.MessageBox.Show(this,
-                "当前任务栏是「左对齐」，左端被开始按钮和任务图标占满，没有位置可放，"
-                + "所以「任务栏位置」暂时不能选。\n\n"
-                + "要恢复选择：打开「设置 → 个性化 → 任务栏 → 任务栏对齐方式」，改成「居中」。\n"
-                + "改完切回这个窗口，开关会自动解锁，点一下立即生效。",
-                "任务栏位置暂不可用", MessageBoxButton.OK, MessageBoxImage.Information);
+            if (AnchorLockedHint == null) return;
+
+            if (AnchorLockedHint.Visibility != Visibility.Visible)
+            {
+                // 先量出目标高度：可见后按 Auto 排一次版拿 ActualHeight，再把高度压回 0 开始动画。
+                AnchorLockedHint.BeginAnimation(FrameworkElement.HeightProperty, null);
+                AnchorLockedHint.Visibility = Visibility.Visible;
+                AnchorLockedHint.Height = double.NaN;
+                AnchorLockedHint.Opacity = 0;
+                AnchorLockedHint.UpdateLayout();
+                double target = AnchorLockedHint.ActualHeight;
+                if (target <= 0) target = 96;          // 兜底：还没排过版时给个可信值
+
+                var ease = new System.Windows.Media.Animation.CubicEase
+                {
+                    EasingMode = System.Windows.Media.Animation.EasingMode.EaseOut
+                };
+                var grow = new System.Windows.Media.Animation.DoubleAnimation(0, target, HintAnimDuration)
+                {
+                    EasingFunction = ease
+                };
+                grow.Completed += (s2, e2) =>
+                {
+                    // 结束后交回 Auto：文字换行变化时高度仍能自适应
+                    AnchorLockedHint.BeginAnimation(FrameworkElement.HeightProperty, null);
+                    AnchorLockedHint.Height = double.NaN;
+                };
+                AnchorLockedHint.BeginAnimation(FrameworkElement.HeightProperty, grow);
+                AnchorLockedHint.BeginAnimation(UIElement.OpacityProperty,
+                    new System.Windows.Media.Animation.DoubleAnimation(0, 1, HintAnimDuration));
+            }
+
+            if (_anchorHintTimer == null)
+            {
+                _anchorHintTimer = new System.Windows.Threading.DispatcherTimer
+                {
+                    Interval = TimeSpan.FromSeconds(8)
+                };
+                _anchorHintTimer.Tick += (s, e) => { _anchorHintTimer.Stop(); HideAnchorLockedHint(); };
+            }
+            _anchorHintTimer.Stop();
+            _anchorHintTimer.Start();
         }
+
+        private void HideAnchorLockedHint()
+        {
+            _anchorHintTimer?.Stop();
+            if (AnchorLockedHint == null || AnchorLockedHint.Visibility != Visibility.Visible) return;
+
+            double current = AnchorLockedHint.ActualHeight;
+            if (current <= 0) { AnchorLockedHint.Visibility = Visibility.Collapsed; return; }
+
+            var ease = new System.Windows.Media.Animation.CubicEase
+            {
+                EasingMode = System.Windows.Media.Animation.EasingMode.EaseIn
+            };
+            var shrink = new System.Windows.Media.Animation.DoubleAnimation(current, 0, HintAnimDuration)
+            {
+                EasingFunction = ease
+            };
+            shrink.Completed += (s2, e2) =>
+            {
+                AnchorLockedHint.BeginAnimation(FrameworkElement.HeightProperty, null);
+                AnchorLockedHint.BeginAnimation(UIElement.OpacityProperty, null);
+                AnchorLockedHint.Height = double.NaN;
+                AnchorLockedHint.Opacity = 1;
+                AnchorLockedHint.Visibility = Visibility.Collapsed;
+            };
+            AnchorLockedHint.BeginAnimation(FrameworkElement.HeightProperty, shrink);
+            AnchorLockedHint.BeginAnimation(UIElement.OpacityProperty,
+                new System.Windows.Media.Animation.DoubleAnimation(1, 0, HintAnimDuration));
+        }
+
+        private void AnchorLockedHintClose_Click(object sender, RoutedEventArgs e) => HideAnchorLockedHint();
 
         private void OnLeftSwitch_Toggled(object sender, RoutedEventArgs e)
         {
@@ -1058,7 +1133,7 @@ namespace task_monitor
                 _suppressToggle = true;
                 OnLeftSwitch.IsOn = false;
                 _suppressToggle = false;
-                ShowAlignmentLockedDialog();
+                ShowAnchorLockedHint();
                 return;
             }
 

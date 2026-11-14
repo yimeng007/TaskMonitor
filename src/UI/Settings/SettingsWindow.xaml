@@ -235,6 +235,41 @@
                              On the classical (Win10) taskbar 任务栏位置 does not exist, so the
                              expander would be a chevron opening onto nothing — the ctor hides it
                              and uses OnLeftCard below instead. -->
+                        <!-- 左对齐锁定提示（页内条，替代原来的 MessageBox）。
+                             只在「横排 + 左对齐」并且用户尝试打开开关时出现；8 秒后自动收起，也可点 × 关闭。
+                             视觉语言与启动向导的 LeftAlignedPlacement 一致：信息图标 + 加粗标题 + 次要色说明。
+                             为什么不用 MessageBox：模态弹窗会打断操作，且与设置页的 Fluent 风格不搭。 -->
+                        <Border x:Name="AnchorLockedHint" Visibility="Collapsed"
+                                Margin="0,0,0,8" Padding="14,12" CornerRadius="4" ClipToBounds="True"
+                                Background="{DynamicResource ControlFillColorSecondaryBrush}"
+                                BorderBrush="{DynamicResource ControlStrokeColorDefaultBrush}"
+                                BorderThickness="1">
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="Auto" />
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="Auto" />
+                                </Grid.ColumnDefinitions>
+                                <ui:FontIcon Grid.Column="0" FontSize="16" Margin="0,1,10,0"
+                                             VerticalAlignment="Top"
+                                             Icon="{x:Static ui:FluentSystemIcons.Info_20_Regular}" />
+                                <StackPanel Grid.Column="1">
+                                    <TextBlock Text="当前任务栏是「左对齐」，这个开关暂时锁定了"
+                                               FontSize="13" FontWeight="SemiBold" TextWrapping="Wrap" />
+                                    <TextBlock FontSize="12" Margin="0,4,0,0" TextWrapping="Wrap"
+                                               Foreground="{DynamicResource TextFillColorSecondaryBrush}"
+                                               Text="左端被开始按钮和任务图标占满，没有空位可放，所以任务栏窗口停靠在通知区域左侧。要恢复选择：设置 → 个性化 → 任务栏 → 任务栏对齐方式，改成「居中」；改完切回这里会自动解锁，点一下立即生效。" />
+                                </StackPanel>
+                                <Button Grid.Column="2" Margin="8,0,0,0" VerticalAlignment="Top"
+                                        Style="{StaticResource ChromeButtonStyle}"
+                                        Click="AnchorLockedHintClose_Click"
+                                        ToolTip="关闭提示">
+                                    <ui:FontIcon FontSize="12"
+                                                 Icon="{x:Static ui:FluentSystemIcons.Dismiss_16_Regular}" />
+                                </Button>
+                            </Grid>
+                        </Border>
+
                         <ui:SettingsExpander x:Name="OnLeftExpander" Header="任务栏位置开关"
                                              IsExpanded="True"
                                              Description="系统任务栏在底部（默认）或顶部时生效：开启则按下面的「任务栏位置」摆放；关闭则固定在任务栏最左端。切到左侧或右侧时按下方「竖排任务栏」的规则。"

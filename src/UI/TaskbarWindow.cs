@@ -471,7 +471,7 @@ namespace task_monitor
 
         private const uint USER_DEFAULT_SCREEN_DPI = 96;
         private const uint TIMER_ID = 1;                   // refresh + DPI poll
-        private const uint TIMER_ID_POS = 2;               // classical family only: band re-dock poll
+        private const uint TIMER_ID_POS = 2;               // 100ms 位置跟随（所有族）；经典族另兼 band 重停靠
         private const int DEFAULT_INTERVAL_MS = 1000;      // default sampling cadence
         // TrafficMonitor re-checks the task-buttons band every 100ms: explorer re-expands
         // it as windows open/close, and the (configurable, up to 2s) sample tick would
@@ -1621,8 +1621,12 @@ namespace task_monitor
             WindowInterop.SetTimer(hwnd, (IntPtr)TIMER_ID, (uint)_sampleIntervalMs, IntPtr.Zero);
             // Classical only: the 100ms band re-dock poll (explorer re-expands the band
             // as windows open/close — see TIMER_ID_POS).
-            if (classical)
-                WindowInterop.SetTimer(hwnd, (IntPtr)TIMER_ID_POS, POS_INTERVAL_MS, IntPtr.Zero);
+            // 位置跟随定时器对所有任务栏族都启用（原来只有 classic）。
+            // 2026-11-14 用户报「慢半拍」：Win11 上位置只随采样间隔（默认 1 秒）更新，
+            // 任务栏改位置/对齐后图标早已重排完，覆盖层还要等最多 1 秒才跟上。
+            // 100ms = 10Hz，与经典族原本的轮询同频；RepositionOverlay 每拍只读 1~3 个窗口矩形，
+            // 且位置没变时不会 MoveWindow，开销可忽略。
+            WindowInterop.SetTimer(hwnd, (IntPtr)TIMER_ID_POS, POS_INTERVAL_MS, IntPtr.Zero);
 
             if (_stopRequested)
             {
@@ -3019,7 +3023,16 @@ namespace task_monitor
             int yrel;
             if (IsTaskbarCenterAligned())
             {
-                yrel = spacing;                      // Start is mid-bar → the top edge is free
+                // 居中对齐 → 图标组竖直居中，理论上「顶端」是空的。但任务栏很高时（美化工具 / 4K 竖屏），
+                // 死贴顶端会让覆盖层孤零零挂在最上面，离图标簇很远，看起来像没对齐。
+                // 2026-11-14 改为**紧贴图标簇上方**：读簇里各子窗口的实时矩形取最小 top，
+                // 覆盖层就贴在整簇（含开始按钮）的上边缘，视觉上靠近中间又不压图标。
+                // 读不到簇（类名全缺失 / 跨进程矩形被拒）→ 退回原来的顶端锚点，不影响可用性。
+                int clusterTop = TryGetVerticalClusterTop(taskbar, bandTop, bandH);
+                yrel = clusterTop > bandTop
+                    ? clusterTop - bandTop - windowH - spacing
+                    : spacing;
+                if (yrel < spacing) yrel = spacing;   // 簇太靠上时别把窗口顶出任务栏
             }
             else
             {
@@ -3041,6 +3054,24 @@ namespace task_monitor
 
         // 图标簇测量（ClusterTop）随顶端锚点一起移除了（2026-11-10）：那 2 DIP 的缝隙在 26H2 的
         // 侧边任务栏上根本碰不到图标（实测：Start 在 y 499–544，ReBar 在 544–764 —— 都在下半段）。
+        // 2026-11-14 为了「竖排+居中时贴图标簇上方」重新加回，但只取**簇的顶边**、不做任何图标命中判断：
+        // 遍历 _clusterClasses 里找得到的子窗口，取最小的 top；全都读不到就返回 bandTop（调用方据此退回顶端锚点）。
+        // 单次调用最多 3 次 FindClassChild + 3 次 GetWindowRect（都是 USER 锁读，非跨线程 send，见 gotchas §43）。
+        private static int TryGetVerticalClusterTop(IntPtr taskbar, int bandTop, int bandH)
+        {
+            int best = int.MaxValue;
+            foreach (string cls in _clusterClasses)
+            {
+                if (cls == "TrayDummySearchControl") continue;   // 托盘侧，不属于图标簇
+                IntPtr child = FindClassChild(taskbar, cls);
+                if (child == IntPtr.Zero) continue;
+                if (!TryGetWindowRectGuarded(child, 300, out var rc)) continue;
+                if (rc.top <= bandTop || rc.top >= bandTop + bandH) continue;   // 明显不在带内，忽略
+                if (rc.top < best) best = rc.top;
+            }
+            return best == int.MaxValue ? bandTop : best;
+        }
+
         // 下面这份类名列表仍然供竖排
         private static readonly string[] _clusterClasses = { "Start", "ReBarWindow32", "TrayDummySearchControl" };
 
@@ -4048,6 +4079,21 @@ namespace task_monitor
             }
             if (dockedRest && hasDockWork)
                 FloatHiddenPos(s.FloatDockEdge, dockWork, x, y, s.PhysicalWidth, s.PhysicalHeight, s.Dpi, out x, out y);
+
+            // 贴边状态（含 peek 弹出中）下，**垂直于贴边的那根轴必须贴当前工作区边**，
+            // 不能沿用 home 的残留值。实测（2026-11-15）：左任务栏时代 home.x=48，
+            // 任务栏搬到右侧后 work.left=0、贴边条在 0..8；peek 把窗口正确弹到 x=0，
+            // 但下一次重摆按 home 又把它拉回 48 —— 光标（x≈0~7）落到窗口外，
+            // 200ms 看护收起，表现为「弹出后隔一会儿突然收起」。
+            // 健康情况下 home 本来就贴在边上，这行是空操作，不改变原有行为。
+            if (!hiddenRest && hasDockWork && s.FloatDockEdge != 0)
+            {
+                if (s.FloatDockEdge == 1) x = dockWork.left;
+                else if (s.FloatDockEdge == 2) x = dockWork.right - s.PhysicalWidth;
+                else if (s.FloatDockEdge == 3) y = dockWork.top;
+                if (!s.Owner._floatingAllowOutOfBounds)
+                    ClampFloatingToWorkArea(dockWork, ref x, ref y, s.PhysicalWidth, s.PhysicalHeight);
+            }
             if (x == s.FloatX && y == s.FloatY)
             {
                 s.FloatAvoiding = dodged;
@@ -4130,12 +4176,25 @@ namespace task_monitor
             }
             if (!TryGetWindowRectGuarded(s.TaskbarHwnd, 300, out var taskbarRect)) return;
 
+            // 任务栏自己不在显示器内 = 它正在自动隐藏/滑出。此时不重摆：
+            // 我们是它的子窗口，Windows 已经带着我们走了；这时再 MoveWindow 等于和动画抢方向。
+            // （2026-11-14：100ms 跟随上线后，日志里 9 秒刷了 16 条「覆盖层超出显示器边界」。）
+            IntPtr monNow = WindowInterop.MonitorFromWindow(s.TaskbarHwnd, WindowInterop.MONITOR_DEFAULTTONEAREST);
+            if (monNow != IntPtr.Zero)
+            {
+                var miNow = new WindowInterop.MONITORINFO { cbSize = (uint)Marshal.SizeOf<WindowInterop.MONITORINFO>() };
+                if (WindowInterop.GetMonitorInfoW(monNow, ref miNow)
+                    && (taskbarRect.left < miNow.rcMonitor.left || taskbarRect.top < miNow.rcMonitor.top
+                        || taskbarRect.right > miNow.rcMonitor.right || taskbarRect.bottom > miNow.rcMonitor.bottom))
+                    return;
+            }
+
             // Orientation first: a taskbar dragged to another screen edge — or, on Win11
             // 26H2, switched to the left/right 任务栏位置 in 设置 — flips the layout. Transpose,
             // resize and re-dock (ReconfigureOrientation), never just move: the horizontal
             // grid is ~200 DIP wide and would swamp a 48-DIP side bar. The classical family
-            // also watches for this on its 100ms TIMER_ID_POS; for the Win11 family this tick
-            // is the only watcher. A zero-sized rect (mid-restart/mid-layout) is NOT an
+            // 同样在 100ms TIMER_ID_POS 上被复查——2026-11-14 起 Win11 族也有这个定时器
+            // （原来只随采样拍，用户报「慢半拍」）。A zero-sized rect (mid-restart/mid-layout) is NOT an
             // orientation: the aspect is only read off a real rect.
             bool verticalNow = taskbarRect.right > taskbarRect.left && taskbarRect.bottom > taskbarRect.top
                 && (taskbarRect.right - taskbarRect.left) < (taskbarRect.bottom - taskbarRect.top);
@@ -4467,8 +4526,15 @@ namespace task_monitor
                 msg += $"，覆盖层=({ov.left},{ov.top})-({ov.right},{ov.bottom}) {ov.right - ov.left}x{ov.bottom - ov.top}px";
                 bool mayLeaveMonitor = isFloating
                     && (floating.Owner._floatingAllowOutOfBounds || floating.FloatDockEdge != 0);
-                if (hasMon && !mayLeaveMonitor && (ov.left < mi.rcMonitor.left || ov.top < mi.rcMonitor.top
-                    || ov.right > mi.rcMonitor.right || ov.bottom > mi.rcMonitor.bottom))
+                // 任务栏「自动隐藏」滑动期间它自己就在显示器外（实测 y 从 1392 一路滑到 1486，
+                // 屏幕只有 1440 高）。覆盖层是它的子窗口，当然跟着出去 —— 那不是「我们的错位」，
+                // 2026-11-14 起不再当告警刷屏（100ms 跟随会让它一秒撞上七八次）。
+                bool taskbarItselfOutside = TryGetWindowRectGuarded(taskbar, 300, out var tbRect)
+                    && (tbRect.left < mi.rcMonitor.left || tbRect.top < mi.rcMonitor.top
+                        || tbRect.right > mi.rcMonitor.right || tbRect.bottom > mi.rcMonitor.bottom);
+                if (hasMon && !mayLeaveMonitor && !taskbarItselfOutside
+                    && (ov.left < mi.rcMonitor.left || ov.top < mi.rcMonitor.top
+                        || ov.right > mi.rcMonitor.right || ov.bottom > mi.rcMonitor.bottom))
                 {
                     clipped = true;
                     msg += "——覆盖层超出显示器边界，部分内容不可见";
@@ -5115,7 +5181,20 @@ namespace task_monitor
                             WindowInterop.SetTimer(hwnd, (IntPtr)TIMER_ID_FLOAT_PEEK_WATCH, FLOAT_PEEK_WATCH_MS, IntPtr.Zero);
                             ComputeFloatTarget(hwnd, s, out int px, out int py, out _);
                             if (FloatingHomeWorkArea(hwnd, s, out var peekWork))
+                            {
                                 ClampFloatingToWorkArea(peekWork, ref px, ref py, s.PhysicalWidth, s.PhysicalHeight);
+
+                                // 贴着的那根轴必须落在**当前**工作区边上，不能用 home 的残留值：
+                                // 例：任务栏在左侧时 home.x=48（贴任务栏右边）；任务栏搬到右侧后 work.left 变 0、
+                                // 隐藏位变成 x=-228（只露 0..8），但 home.x 仍是 48 —— peek 会把窗口弹到 48..284，
+                                // 光标还停在 x≈10 的贴边条上，于是「弹出即判光标离开 → 秒收」（2026-11-15 复现确认）。
+                                // 现算这根轴，peek 一定盖住光标；只在贴边隐藏（FloatDockEdge≠0）这条路上生效。
+                                if (s.FloatDockEdge == 1) px = peekWork.left;
+                                else if (s.FloatDockEdge == 2) px = peekWork.right - s.PhysicalWidth;
+                                else if (s.FloatDockEdge == 3) py = peekWork.top;
+
+                                ClampFloatingToWorkArea(peekWork, ref px, ref py, s.PhysicalWidth, s.PhysicalHeight);
+                            }
                             Logger.Info("悬浮模式：贴边隐藏——鼠标移入，弹出悬浮窗");
                             StartFloatSlide(hwnd, s, px, py);
                         }
@@ -5567,25 +5646,13 @@ namespace task_monitor
                     }
                     if (wParam == (IntPtr)TIMER_ID_POS)
                     {
-                        // Classical family only: re-dock against the band (TIMER_ID_POS).
-                        // A flip of the taskbar's orientation is reconfigured, not just
-                        // moved (transpose + resize + re-dock) — the Win11 family watches for
-                        // the same flip on the sample tick inside RepositionOverlay.
-                        CrashTrace.NoteStep("经典轮询(TIMER_ID_POS)");
+                        // 位置跟随（TIMER_ID_POS，100ms）——所有族共用：
+                        // 朝向翻转、任务栏换边、图标重排、托盘增减都会在 100ms 内跟上，
+                        // 不再等采样拍。朝向翻转由 RepositionOverlay 内部处理（转置+改尺寸+重停靠）。
+                        CrashTrace.NoteStep("位置轮询(TIMER_ID_POS)");
                         var ps = StateOf(hwnd);
-                        if (ps != null && ps.Classical)
+                        if (ps != null)
                         {
-                            CrashTrace.NoteStep("轮询:测任务栏矩形");
-                            if (TryGetWindowRectGuarded(ps.TaskbarHwnd, 300, out var rcT))
-                            {
-                                bool vert = rcT.right - rcT.left < rcT.bottom - rcT.top;
-                                if (vert != ps.Vertical)
-                                {
-                                    ReconfigureOrientation(hwnd, ps);
-                                    return IntPtr.Zero;
-                                }
-                            }
-                            CrashTrace.NoteStep("轮询:RepositionOverlay");
                             RepositionOverlay(hwnd, ps, force: false);
                         }
                         return IntPtr.Zero;

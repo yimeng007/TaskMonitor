@@ -14,6 +14,11 @@
         ui:TitleBar.Height="32">
     <Window.Resources>
         <Style x:Key="GuideCardStyle" TargetType="{x:Type RadioButton}">
+            <!-- Foreground 必须显式给：这是**完整自定义模板**，会替换掉 Fluent 主题的隐式 RadioButton 样式，
+                 于是继承链断掉、回落到控件默认的 SystemColors.ControlTextBrush（恒为黑色、不随主题变）。
+                 2026-11-14 实测：深色主题下卡片背景 (59,64,81)、标题字 (38,42,63) —— 比背景还暗，等于看不见。
+                 用 DynamicResource 绑主题主文字色：浅色→近黑，深色→近白，跟随系统即时切换。 -->
+            <Setter Property="Foreground" Value="{DynamicResource TextFillColorPrimaryBrush}" />
             <Setter Property="Background" Value="{DynamicResource CardBackgroundFillColorDefaultBrush}" />
             <Setter Property="BorderBrush" Value="{DynamicResource CardStrokeColorDefaultBrush}" />
             <Setter Property="Padding" Value="12" />
@@ -91,6 +96,8 @@
             <Setter Property="Height" Value="12" />
         </Style>
         <Style x:Key="OptionTitleStyle" TargetType="TextBlock">
+            <!-- 同样显式绑主题主文字色：即使将来被放到非 RadioButton 容器里也不会退回黑字 -->
+            <Setter Property="Foreground" Value="{DynamicResource TextFillColorPrimaryBrush}" />
             <Setter Property="FontSize" Value="16" />
             <Setter Property="FontWeight" Value="SemiBold" />
             <Setter Property="HorizontalAlignment" Value="Center" />

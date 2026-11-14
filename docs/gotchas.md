@@ -893,9 +893,24 @@ The shape to hold onto:
    one the user aimed at. Dragging out of the hidden strip works — with out-of-bounds OFF the
    drag clamp follows the grab point into the work area (ON leaves the drop position alone),
    and the drop re-evaluates the dock (pull past `EdgeSnapDip` inside to release).
-6. **Side taskbars (Win10-only, deprioritized)**: the edges are the WORK area's, so docking at
-   an edge that the taskbar occupies slides the widget under it; with 置顶显示 on the strip
-   then draws over the taskbar. Accepted — Win11 (the supported platform) has no side taskbars.
+6. **任务栏占着某条边时（26H2 起顶部/左/右都算）**：贴边隐藏的「边」取的是 **work area** 的边，
+   而 work area 已经把任务栏排除掉了 —— 所以隐藏位置本身是落在可用区内的（
+   `FloatHiddenPos` 顶部边算 `work.top + strip - height`，可见条正好在 `[work.top, work.top+8]`）。
+   **但如果任务栏压在这条边上（26H2 允许把任务栏放到顶部/左侧/右侧），可见那条 8 DIP 会紧贴任务栏下沿** ——
+   开「置顶显示」时可能被任务栏的 z-order 盖住，表现为「钻进去了」。
+   **2026-11-14 更正**：本条旧文写的是「Win10-only, deprioritized … Accepted — Win11 没有侧边任务栏」，
+   **那个前提已经过期**：
+   - Windows 11 **26H2**（Insider 公告 2026-05-15，正式版 2026 下半年）**恢复了四边任务栏**：
+     设置 → 个性化 → 任务栏 → 任务栏行为里可选 顶部/底部/左侧/右侧，另有「精巧任务栏」缩放。
+   - 同一份公告也写明：**替代位置（顶部/左右）不支持自动隐藏、不支持平板优化、触摸手势仍在开发、
+     搜索框退化为图标**。
+   - 本机实测（26300 / 26H2，2026-11-14）：底部任务栏时 work area = `(0,0)-(2560,1392)`，
+     与任务栏 `(0,1392)-(2560,1440)` 完全不重叠 —— 说明 work area 排除是可靠的；
+     **顶部任务栏下的 work area 尚未实测**（需把任务栏挪到顶部再跑 `06-测试工具\桌面几何探测`）。
+
+   **待办**：在「任务栏在顶部 + 悬浮窗 + 贴边隐藏」下确认是否真的滑到任务栏下沿之外；
+   若是，修法是在 `FloatHiddenPos` 之后按 `Shell_TrayWnd` 的实时矩形做一次钳制
+   （可见条必须落在任务栏之外）。
 
 The card greys out outside the floating form (`FloatingEdgeHideCard`, the `FloatingTopmostCard`
 rule), the menu item mirrors it with the same `Opened` re-read, and an open settings page is

@@ -60,6 +60,16 @@ namespace task_monitor
                 typeof(UsageHistoryChart),
                 new FrameworkPropertyMetadata(Color.FromArgb(0x66, 0x00, 0x00, 0x00), FrameworkPropertyMetadataOptions.AffectsRender));
 
+        // 是否在左侧标出 25%/50%/75%（对应三条内部网格线）。默认开：
+        // 这张图没有坐标轴，只靠三条网格线时只能估读，加了数字才能一眼对上「92%」在哪。
+        // 0%/100% 不标 —— 它们就是边框本身，且顶部已有大号数值。
+        public static readonly DependencyProperty ShowAxisLabelsProperty =
+            DependencyProperty.Register(
+                nameof(ShowAxisLabels),
+                typeof(bool),
+                typeof(UsageHistoryChart),
+                new FrameworkPropertyMetadata(true, FrameworkPropertyMetadataOptions.AffectsRender));
+
         public static readonly DependencyProperty FrameCornerRadiusProperty =
             DependencyProperty.Register(
                 nameof(FrameCornerRadius),
@@ -71,6 +81,12 @@ namespace task_monitor
         {
             get => (IReadOnlyList<double?>)GetValue(ValuesProperty);
             set => SetValue(ValuesProperty, value);
+        }
+
+        public bool ShowAxisLabels
+        {
+            get => (bool)GetValue(ShowAxisLabelsProperty);
+            set => SetValue(ShowAxisLabelsProperty, value);
         }
 
         public Color AccentColor
@@ -178,7 +194,56 @@ namespace task_monitor
                 double x = w * (i / 4.0);
                 dc.DrawLine(gridPen, new Point(x, 0), new Point(x, h));
             }
+
+            if (ShowAxisLabels) DrawAxisLabels(dc, h);
         }
+
+        // 左侧 25%/50%/75% 标注：字号 9、贴着网格线垂直居中。
+        //
+        // 颜色**不能用网格色派生**：网格用的是 SystemBaseLowColor（一种填充底色），深色主题下
+        // 它是很淡的白、浅色主题下是很淡的黑 —— 拿来做文字会糊。文字必须用文字色：
+        // 优先 "TextFillColorSecondaryBrush"（跟随 Fluent 主题，深色自动变浅、浅色自动变深），
+        // 取不到才退回网格色（保证脱离主题字典时仍然可见）。
+        private void DrawAxisLabels(DrawingContext dc, double h)
+        {
+            var brush = ResolveAxisLabelBrush();
+            var typeface = new Typeface(SystemFonts.MessageFontFamily,
+                FontStyles.Normal, FontWeights.Normal, FontStretches.Normal);
+            double pixelsPerDip = VisualTreeHelper.GetDpi(this).PixelsPerDip;
+
+            for (int i = 1; i <= 3; i++)
+            {
+                double y = h * (1.0 - i / 4.0);
+                string text = (i * 25).ToString(NumberFormat) + "%";
+                var ft = new FormattedText(text,
+                    System.Globalization.CultureInfo.CurrentCulture,
+                    FlowDirection.LeftToRight, typeface, 9, brush, pixelsPerDip);
+                dc.DrawText(ft, new Point(4, y - ft.Height / 2));
+            }
+        }
+
+        // 主题感知的标注色：TextFillColorSecondaryBrush 在深色主题下是浅灰、浅色下是深灰，
+        // 正好满足「白天与黑暗相对反转」的要求；取不到再去网格色上抬透明度兜底。
+        private Brush ResolveAxisLabelBrush()
+        {
+            var app = Application.Current;
+            if (app != null)
+            {
+                if (app.TryFindResource("TextFillColorSecondaryBrush") is SolidColorBrush themed)
+                {
+                    var b = new SolidColorBrush(themed.Color);
+                    if (b.CanFreeze) b.Freeze();
+                    return b;
+                }
+            }
+            Color g = GridColor;
+            var fallback = new SolidColorBrush(Color.FromArgb(0xB4, g.R, g.G, g.B));
+            if (fallback.CanFreeze) fallback.Freeze();
+            return fallback;
+        }
+
+        private static readonly System.Globalization.NumberFormatInfo NumberFormat =
+            System.Globalization.CultureInfo.InvariantCulture.NumberFormat;
 
         // Outer frame: rounded corners + a more prominent stroke than the inner grid.
         private void DrawFrame(DrawingContext dc, double w, double h)
