@@ -202,7 +202,7 @@ namespace task_monitor
             if (_handlerDelegate != null) return;
             try
             {
-                _path = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "logs", "native-crash.log");
+                _path = Path.Combine(AppPaths.LogsDir, "native-crash.log");
                 _handlerDelegate = Handler;
                 if (AddVectoredExceptionHandler(1, _handlerDelegate) == IntPtr.Zero)
                     Logger.Warn("原生崩溃跟踪：AddVectoredExceptionHandler 失败——原生崩溃仍不会留下记录");

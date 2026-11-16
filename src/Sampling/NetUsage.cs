@@ -48,7 +48,7 @@ namespace task_monitor
             set { _keepMonths = NetHistory.NormalizeKeep(value); }
         }
 
-        /// <summary>历史文件路径（与 exe 同目录）。测试可覆盖它指向临时目录。</summary>
+        /// <summary>历史文件路径（与配置同目录，见 AppPaths）。测试可覆盖它指向临时目录。</summary>
         public static string HistoryPath = NetHistory.DefaultPath;
 
         /// <summary>

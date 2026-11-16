@@ -178,7 +178,12 @@ namespace task_monitor
             // label says which one it's showing (公网 IPv4 is always v4: its endpoints are).
             LocalIpLabel.Text = info.LocalIp?.IndexOf(':') >= 0 ? "本机 IPv6：" : "本机 IPv4：";
             SetIpButton(LocalIpButton, info.LocalIp);
-            SetIpButton(PublicIpButton, info.PublicIp);
+            // 刚点过「立即重查」的 12 秒内，采样器可能先给一次空值（正在拉取）——
+            // 此时**不要抹掉已显示的 IP**，否则用户看到的是「点了刷新 → 先消失 → 再出现」
+            // （2026-11-16 反馈）。窗口过后恢复正常（真的失效仍然会显示 —）。
+            bool refreshing = DateTime.UtcNow < _ipRefreshGraceUntil;
+            if (!(refreshing && string.IsNullOrEmpty(info.PublicIp) && PublicIpButton.Tag is string))
+                SetIpButton(PublicIpButton, info.PublicIp);
             UpdatePublicIpChangeMark(info);
             // Full-width v6 row: absent (no v6 connectivity / lookup pending) → the whole
             // cell collapses, like the Wi-Fi cells — a permanent "—" row would just be a
@@ -191,8 +196,11 @@ namespace task_monitor
             // (infinite width) and never trim.
             SetIpButton(PublicIpV6Button, info.PublicIpV6, echoAddress: true);
             UpdatePublicIpEye();
-            GatewayRttRun.Text = FormatRtt(info.GatewayRttMs);
-            PublicRttRun.Text = FormatRtt(info.PublicRttMs);
+            // stale = 本次没探到、显示的是上次有效值 → 前面加 "~"，
+            // 让人分得清「真的 12ms」和「上次是 12ms、这次没测到」。
+            GatewayRttRun.Text = FormatRtt(info.GatewayRttMs, info.GatewayRttStale, info.GatewayRttViaTcp);
+            PublicRttRun.Text = FormatRtt(info.PublicRttMs, info.PublicRttStale, info.PublicRttViaTcp);
+
 
             // Keep the open tooltip in lockstep with this per-second refresh.
             _tip.Refresh();
@@ -279,7 +287,21 @@ namespace task_monitor
             return bps + " bps";
         }
 
-        private static string FormatRtt(long ms) => ms < 0 ? "—" : ms == 0 ? "<1 ms" : ms + " ms";
+        /// <summary>
+        /// 延迟文本。三种前缀含义：
+        /// <list type="bullet">
+        /// <item>无前缀 —— ICMP 实测；</item>
+        /// <item><c>~</c> —— 本次没探到，显示的是上一次的 ICMP 值；</item>
+        /// <item><c>≈</c> —— ICMP 被网络拦了，用 TCP 443 握手量的（口径不同，一般略高于 ping）。</item>
+        /// </list>
+        /// </summary>
+        private static string FormatRtt(long ms, bool stale = false, bool viaTcp = false)
+        {
+            if (ms < 0) return "—";
+            string v = ms == 0 ? "<1 ms" : ms + " ms";
+            if (viaTcp) return "≈" + v;
+            return stale ? "~" + v : v;
+        }
 
         // ---------- IP copy-on-click ----------
 
@@ -309,10 +331,40 @@ namespace task_monitor
 
         // 立即重查公网 IP 与地区：只把「下一次查询」提前到现在，不新增任何定时器。
         // 采样器在后台线程跑，下一拍（≤1 秒）就会带着新值发布上来，面板随即刷新。
+        /// <summary>点「立即重查」后的一小段"宽限期"：这期间采样器给空值也不清空已显示的 IP。</summary>
+        private DateTime _ipRefreshGraceUntil = DateTime.MinValue;
+
+        // 连点节流：上游是公共 what-is-my-ip 服务，3 秒内多点几次只是多打几次接口。
+        // **按钮不置灰** —— 置灰让用户"硬等"，但刷新本来就是"我想立刻看到"的动作；
+        // 用「图标转一圈」代替禁用，既给了反馈，又不会挡住手（2026-11-16 反馈）。
+        private DateTime _ipRefreshCooldownUntil = DateTime.MinValue;
+
         private void RefreshIp_Click(object sender, RoutedEventArgs e)
         {
+            var now = DateTime.UtcNow;
+            SpinRefreshIcon();
+            if (now < _ipRefreshCooldownUntil) return;      // 3 秒内重复点击：只转圈，不再请求
+            _ipRefreshCooldownUntil = now.AddSeconds(3);
+
+            _ipRefreshGraceUntil = now.AddSeconds(12);
             try { NetInfoSampler.Current?.RequestImmediateRefresh(); }
             catch { /* 采样器已停（退出中）：点一下没反应，无害 */ }
+        }
+
+        /// <summary>刷新图标转一圈（700ms）—— 作为「点了、收到了」的即时反馈。</summary>
+        private void SpinRefreshIcon()
+        {
+            if (RefreshIpIconRotate == null) return;
+            RefreshIpIconRotate.BeginAnimation(System.Windows.Media.RotateTransform.AngleProperty,
+                new System.Windows.Media.Animation.DoubleAnimation(
+                    0, 360, TimeSpan.FromMilliseconds(700))
+                {
+                    EasingFunction = new System.Windows.Media.Animation.CubicEase
+                    {
+                        EasingMode = System.Windows.Media.Animation.EasingMode.EaseInOut
+                    },
+                    FillBehavior = System.Windows.Media.Animation.FillBehavior.Stop
+                });
         }
 
         private void UpdatePublicIpChangeMark(NetInfo info)

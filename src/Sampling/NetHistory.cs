@@ -62,20 +62,8 @@ namespace task_monitor
         public const int MinKeepMonths = 1;
         public const int MaxKeepMonths = 12;
 
-        /// <summary>历史文件与 exe 同目录。</summary>
-        public static string DefaultPath
-        {
-            get
-            {
-                try
-                {
-                    string dir = Path.GetDirectoryName(System.Reflection.Assembly.GetExecutingAssembly().Location);
-                    if (!string.IsNullOrEmpty(dir)) return Path.Combine(dir, "net_history.json");
-                }
-                catch { }
-                return "net_history.json";
-            }
-        }
+        /// <summary>历史文件与配置同目录（默认 exe 旁；便携目录不可用/「随手放」时在 %LOCALAPPDATA%）。</summary>
+        public static string DefaultPath => AppPaths.NetHistoryFile;
 
         /// <summary>把保留月数夹到合法区间。</summary>
         public static int NormalizeKeep(int months)

@@ -48,7 +48,7 @@ namespace task_monitor
                 if (_dir != null) return;
                 try
                 {
-                    _dir = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "logs");
+                    _dir = AppPaths.LogsDir;   // 与配置同目录（见 AppPaths）
                     Directory.CreateDirectory(_dir);
                     CleanupLocked();
                 }

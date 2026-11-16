@@ -64,30 +64,32 @@
                 </TextBlock>
             </Grid>
 
-            <!-- Row 3: 已缓存 | 分页池 | 非分页池 -->
-            <Grid>
-                <Grid.ColumnDefinitions>
-                    <ColumnDefinition Width="*" />
-                    <ColumnDefinition Width="*" />
-                    <ColumnDefinition Width="*" />
-                </Grid.ColumnDefinitions>
-                <TextBlock Grid.Column="0" FontSize="12">
+            <!-- Row 3: 已缓存 / 分页池 / 非分页池
+                 用 WrapPanel，**按「标签：值」整块换行**（2026-11-16 定）：
+                 - 宽度够 → 三个字段排成一行，字段之间靠 12px 外边距分隔，不靠空格撑
+                 - 宽度不够（例如 1024×768 的虚拟机、弹窗更窄）→ 整个字段折到下一行，
+                   **不会出现「403.0 MB非分页池」叠字，也不会把「184.0 MB」的 B 裁掉**
+                 网格分列方案全部放弃：三列等宽会压字、首列 Auto 会裁末列，
+                 根因是三个字段总宽本来就贴着容器宽度。 -->
+            <WrapPanel Orientation="Horizontal">
+                <TextBlock FontSize="12" Margin="0,0,12,0">
                     <Run Text="已缓存：" Foreground="{DynamicResource TextFillColorSecondaryBrush}" />
                     <Run x:Name="CachedValueRun" Text="—" />
                 </TextBlock>
-                <TextBlock Grid.Column="1" FontSize="12">
+                <TextBlock FontSize="12" Margin="0,0,12,0">
                     <Run Text="分页池：" Foreground="{DynamicResource TextFillColorSecondaryBrush}" />
                     <Run x:Name="PagedPoolValueRun" Text="—" />
                 </TextBlock>
-                <TextBlock Grid.Column="2" FontSize="12">
+                <TextBlock FontSize="12">
                     <Run Text="非分页池：" Foreground="{DynamicResource TextFillColorSecondaryBrush}" />
                     <Run x:Name="NonPagedPoolValueRun" Text="—" />
                 </TextBlock>
-            </Grid>
+            </WrapPanel>
         </ikw:SimpleStackPanel>
 
-        <!-- Per-process memory list (private working set — same source as Task Manager) -->
-        <Border Background="Transparent" BorderThickness="0" Padding="0,4">
+        <!-- 高占用进程（表头 + 固定高度列表）。外层 Border/SimpleStackPanel 是原有结构，
+             2026-11-16 拆「分页池」两行时被误删，此处补回。 -->
+        <Border Background="Transparent" BorderThickness="0" Padding="0,6,0,0">
             <ikw:SimpleStackPanel Spacing="6">
                 <Grid>
                     <TextBlock Text="高占用进程" FontSize="12"

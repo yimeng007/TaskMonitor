@@ -40,6 +40,32 @@
             <Setter Property="Margin" Value="1,16,0,12" />
         </Style>
 
+        <!-- 分组标题（2026-11-16）：外观页太长，按功能分两组，点标题收起/展开。
+             不用 SettingsExpander 套 SettingsExpander —— 嵌套会出现双边框 + 圆角错位；
+             这里只要「标题 + chevron」，ToggleButton 最省事，也不影响卡片本身的样式。 -->
+        <Style x:Key="SectionToggleStyle" TargetType="ToggleButton">
+            <Setter Property="HorizontalAlignment" Value="Left" />
+            <!-- 间距：上方 26 与上一组拉开、下方 12 托住卡片（收起时两组标题之间就是这个 12+26） -->
+            <Setter Property="Margin" Value="1,0,0,6" />
+            <Setter Property="Cursor" Value="Hand" />
+            <!-- 去掉点击后的虚线焦点框（2026-11-16 用户截图指出） -->
+            <Setter Property="FocusVisualStyle" Value="{x:Null}" />
+            <Setter Property="Focusable" Value="False" />
+            <Setter Property="Foreground" Value="{DynamicResource TextFillColorPrimaryBrush}" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <!-- 模板只负责「透明背景 + 摆内容」。
+                         图标放在**内容区**（各自的 FontIcon，有名字），由代码在折叠时换 Icon ——
+                         早先写在模板里用 Trigger 换，实测那个 setter 不生效，箭头一直朝上（2026-11-16）。 -->
+                    <ControlTemplate TargetType="ToggleButton">
+                        <Border Background="Transparent" Padding="0">
+                            <ContentPresenter HorizontalAlignment="Left" VerticalAlignment="Center" />
+                        </Border>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
         <!-- 曲线颜色的色块 = a Button, NOT a Border. The 外观 page lives inside a
              TouchDragScrollViewer, which captures the mouse on press to drag-scroll; a Border
              does no capture of its own, so its MouseLeftButtonUp never came back and every
@@ -150,7 +176,7 @@
 
                         <TextBlock Style="{StaticResource PageTitleStyle}" Text="通用" />
 
-                        <ui:SettingsCard Header="开机自启"
+                        <ui:SettingsCard Header="开机自启" x:Name="AutoStartCard"
                                          Margin="0,0,0,4">
                             <ui:SettingsCard.HeaderIcon>
                                 <ui:FontIcon Icon="{x:Static ui:FluentSystemIcons.Rocket_20_Regular}" />
@@ -239,6 +265,29 @@
                              只在「横排 + 左对齐」并且用户尝试打开开关时出现；8 秒后自动收起，也可点 × 关闭。
                              视觉语言与启动向导的 LeftAlignedPlacement 一致：信息图标 + 加粗标题 + 次要色说明。
                              为什么不用 MessageBox：模态弹窗会打断操作，且与设置页的 Fluent 风格不搭。 -->
+                        <ToggleButton x:Name="SecTaskbarToggle" IsChecked="True"
+                                      Margin="1,14,0,4"
+                                      Style="{StaticResource SectionToggleStyle}">
+                            <StackPanel Orientation="Horizontal">
+                                <TextBlock Text="任务栏" FontSize="16" FontWeight="SemiBold"
+                                           VerticalAlignment="Center" />
+                                <ui:FontIcon x:Name="SecTaskbarChevron" FontSize="11" Margin="8,3,0,0"
+                                             VerticalAlignment="Center"
+                                             RenderTransformOrigin="0.5,0.5"
+                                             Foreground="{DynamicResource TextFillColorSecondaryBrush}"
+                                             Icon="{x:Static ui:FluentSystemIcons.ChevronUp_16_Regular}">
+                                <ui:FontIcon.RenderTransform>
+                                    <RotateTransform x:Name="SecTaskbarChevronRotate" Angle="0" />
+                                </ui:FontIcon.RenderTransform>
+                            </ui:FontIcon>
+                            </StackPanel>
+                        </ToggleButton>
+                        <!-- ClipToBounds：StackPanel 默认不裁剪子元素，不写这行动画只会「高度变小但内容仍溢出」 -->
+                        <StackPanel x:Name="SecTaskbarBody" ClipToBounds="True">
+                            <StackPanel.RenderTransform>
+                                <TranslateTransform x:Name="SecTaskbarSlide" Y="0" />
+                            </StackPanel.RenderTransform>
+
                         <Border x:Name="AnchorLockedHint" Visibility="Collapsed"
                                 Margin="0,0,0,8" Padding="14,12" CornerRadius="4" ClipToBounds="True"
                                 Background="{DynamicResource ControlFillColorSecondaryBrush}"
@@ -316,6 +365,30 @@
                                 <ui:FontIcon Icon="{x:Static ui:FluentSystemIcons.WindowMultiple_20_Regular}" />
                             </ui:SettingsExpander.HeaderIcon>
                         </ui:SettingsExpander>
+                        </StackPanel>
+
+                        <ToggleButton x:Name="SecDisplayToggle" IsChecked="True"
+                                      Margin="1,10,0,6"
+                                      Style="{StaticResource SectionToggleStyle}">
+                            <StackPanel Orientation="Horizontal">
+                                <TextBlock Text="显示与排列" FontSize="16" FontWeight="SemiBold"
+                                           VerticalAlignment="Center" />
+                                <ui:FontIcon x:Name="SecDisplayChevron" FontSize="11" Margin="8,3,0,0"
+                                             VerticalAlignment="Center"
+                                             RenderTransformOrigin="0.5,0.5"
+                                             Foreground="{DynamicResource TextFillColorSecondaryBrush}"
+                                             Icon="{x:Static ui:FluentSystemIcons.ChevronUp_16_Regular}">
+                                <ui:FontIcon.RenderTransform>
+                                    <RotateTransform x:Name="SecDisplayChevronRotate" Angle="0" />
+                                </ui:FontIcon.RenderTransform>
+                            </ui:FontIcon>
+                            </StackPanel>
+                        </ToggleButton>
+                        <!-- ClipToBounds：StackPanel 默认不裁剪子元素，不写这行动画只会「高度变小但内容仍溢出」 -->
+                        <StackPanel x:Name="SecDisplayBody" ClipToBounds="True">
+                            <StackPanel.RenderTransform>
+                                <TranslateTransform x:Name="SecDisplaySlide" Y="0" />
+                            </StackPanel.RenderTransform>
 
                         <!-- 紧凑模式: tightens the item pitch of the taskbar overlay AND the floating
                              widget — narrower cells (and a smaller row inset), a tighter vertical
@@ -339,64 +412,6 @@
                             </ui:SettingsCard.HeaderIcon>
                             <ui:ToggleSwitch x:Name="ShowSeparatorsSwitch" Toggled="ShowSeparatorsSwitch_Toggled" />
                         </ui:SettingsCard>
-
-                        <!-- 网络流量统计：两个常用开关放在表头（随时可见），三个「进阶」选项折进
-                             Items 里、默认收起 —— 用户 2026-11-12 反馈：这几张卡一字排开太占纵向空间，
-                             而且固定 GB / 历史保留 / 往月显示都不是天天调的东西，收起来更清爽。
-                             FixedGbCard 仍会被 RefreshNetUsageUnitAvailability 置灰（本月+今日都关时）。 -->
-                        <ui:SettingsExpander x:Name="NetUsageCard" Header="网络流量统计"
-                                             IsExpanded="False"
-                                             Description="详情弹窗里显示累计流量（只统计程序运行期间）。本月每月 1 号归零，今日每天 0 点归零。展开可调单位口径、历史保留月数与「往月」行的显示。"
-                                             Margin="0,0,0,4">
-                            <ui:SettingsExpander.HeaderIcon>
-                                <ui:FontIcon Icon="{x:Static ui:FluentSystemIcons.Gauge_20_Regular}" />
-                            </ui:SettingsExpander.HeaderIcon>
-                            <StackPanel Orientation="Horizontal" VerticalAlignment="Bottom" Margin="0,0,0,2">
-                                <TextBlock Text="本月" FontSize="12" VerticalAlignment="Center" Margin="0,0,6,0" />
-                                <ui:ToggleSwitch x:Name="ShowMonthUsageSwitch" Toggled="ShowMonthUsageSwitch_Toggled" />
-                                <TextBlock Text="今日" FontSize="12" VerticalAlignment="Center" Margin="16,0,6,0" />
-                                <ui:ToggleSwitch x:Name="ShowTodayUsageSwitch" Toggled="ShowTodayUsageSwitch_Toggled" />
-                            </StackPanel>
-                            <ui:SettingsExpander.Items>
-                                <!-- 两个开关都关着时这张会被置灰（见 RefreshNetUsageUnitAvailability）：
-                                     既然一行都不显示，单位怎么显示就没意义了。 -->
-                                <ui:SettingsCard x:Name="FixedGbCard" Header="固定按 GB 显示"
-                                                 Description="打开后超过 1024 GB 也不换算成 TB，继续用 GB 显示（1025 GB 就是 1025 GB）；不到 1 GB 时仍按 MB 显示。数值仅供参照，实际用量以运营商为准。关闭则自动升到 TB。">
-                                    <ui:SettingsCard.HeaderIcon>
-                                        <ui:FontIcon Icon="{x:Static ui:FluentSystemIcons.Options_20_Regular}" />
-                                    </ui:SettingsCard.HeaderIcon>
-                                    <ui:ToggleSwitch x:Name="FixedGbSwitch" Toggled="FixedGbSwitch_Toggled" />
-                                </ui:SettingsCard>
-
-                                <!-- 多月历史保留月数（2026-11-12 加）。历史写在 exe 同目录的
-                                     net_history.json，跨月时把上个月的最终数字存一条，超出保留数就裁掉最早的。
-                                     用下拉而不是数字框：可选值就那几档，数字框还要处理非法输入与空值。
-                                     默认 3 个月 —— 「保底」的语义：至少留住上个季度。 -->
-                                <ui:SettingsCard x:Name="NetHistoryCard" Header="流量历史保留"
-                                                 Description="跨月时把上个月的最终数字存进 net_history.json（与 exe 同目录），超出保留月数的自动裁掉最早的。默认 3 个月，最多 12 个月（再多详情弹窗那一行会拉得太长）；删掉这个文件只丢历史，不影响配置与本月累计。">
-                                    <ui:SettingsCard.HeaderIcon>
-                                        <ui:FontIcon Icon="{x:Static ui:FluentSystemIcons.History_20_Regular}" />
-                                    </ui:SettingsCard.HeaderIcon>
-                                    <ComboBox x:Name="NetHistoryKeepCombo" MinWidth="110"
-                                              SelectionChanged="NetHistoryKeepCombo_SelectionChanged">
-                                        <ComboBoxItem Content="保留 3 个月" Tag="3" />
-                                        <ComboBoxItem Content="保留 6 个月" Tag="6" />
-                                        <ComboBoxItem Content="保留 9 个月" Tag="9" />
-                                        <ComboBoxItem Content="保留 12 个月" Tag="12" />
-                                    </ComboBox>
-                                </ui:SettingsCard>
-
-                                <!-- 往月那一行的显示开关。默认关：关掉只影响显示，历史照样按月记录。 -->
-                                <ui:SettingsCard Header="显示往月流量"
-                                                 Description="在「网络」详情弹窗底部多显示一行「往月：…」，列出最近几个已过去月份的累计。默认关闭 —— 打开会让弹窗多一两行；关掉只影响显示，历史照样按月记录。">
-                                    <ui:SettingsCard.HeaderIcon>
-                                        <ui:FontIcon Icon="{x:Static ui:FluentSystemIcons.History_20_Regular}" />
-                                    </ui:SettingsCard.HeaderIcon>
-                                    <ui:ToggleSwitch x:Name="NetHistoryShowSwitch" Toggled="NetHistoryShowSwitch_Toggled" />
-                                </ui:SettingsCard>
-                            </ui:SettingsExpander.Items>
-                        </ui:SettingsExpander>
-
                         <!-- 已用走势 + 曲线颜色：曲线颜色只有开了走势才有意义，索性折进同一个分组
                              （用户 2026-11-12 反馈「这个是否再折叠」）。默认收起，展开才看到色板。 -->
                         <ui:SettingsExpander Header="已用走势"
@@ -464,6 +479,64 @@
                                 <ui:FontIcon Icon="{x:Static ui:FluentSystemIcons.ReOrder_20_Regular}" />
                             </ui:SettingsExpander.HeaderIcon>
                             <Button Content="恢复默认" Click="ResetItemOrder_Click" />
+                        </ui:SettingsExpander>
+                        </StackPanel>
+
+                        <!-- 网络流量统计：两个常用开关放在表头（随时可见），三个「进阶」选项折进
+                             Items 里、默认收起 —— 用户 2026-11-12 反馈：这几张卡一字排开太占纵向空间，
+                             而且固定 GB / 历史保留 / 往月显示都不是天天调的东西，收起来更清爽。
+                             FixedGbCard 仍会被 RefreshNetUsageUnitAvailability 置灰（本月+今日都关时）。 -->
+                        <ui:SettingsExpander x:Name="NetUsageCard" Header="网络流量统计"
+                                             IsExpanded="False"
+                                             Description="详情弹窗里显示累计流量（只统计程序运行期间）。本月每月 1 号归零，今日每天 0 点归零。展开可调单位口径、历史保留月数与「往月」行的显示。"
+                                             Margin="0,14,0,4">
+                            <ui:SettingsExpander.HeaderIcon>
+                                <ui:FontIcon Icon="{x:Static ui:FluentSystemIcons.Gauge_20_Regular}" />
+                            </ui:SettingsExpander.HeaderIcon>
+                            <StackPanel Orientation="Horizontal" VerticalAlignment="Bottom" Margin="0,0,0,2">
+                                <TextBlock Text="本月" FontSize="12" VerticalAlignment="Center" Margin="0,0,6,0" />
+                                <ui:ToggleSwitch x:Name="ShowMonthUsageSwitch" Toggled="ShowMonthUsageSwitch_Toggled" />
+                                <TextBlock Text="今日" FontSize="12" VerticalAlignment="Center" Margin="16,0,6,0" />
+                                <ui:ToggleSwitch x:Name="ShowTodayUsageSwitch" Toggled="ShowTodayUsageSwitch_Toggled" />
+                            </StackPanel>
+                            <ui:SettingsExpander.Items>
+                                <!-- 两个开关都关着时这张会被置灰（见 RefreshNetUsageUnitAvailability）：
+                                     既然一行都不显示，单位怎么显示就没意义了。 -->
+                                <ui:SettingsCard x:Name="FixedGbCard" Header="固定按 GB 显示"
+                                                 Description="打开后超过 1024 GB 也不换算成 TB，继续用 GB 显示（1025 GB 就是 1025 GB）；不到 1 GB 时仍按 MB 显示。数值仅供参照，实际用量以运营商为准。关闭则自动升到 TB。">
+                                    <ui:SettingsCard.HeaderIcon>
+                                        <ui:FontIcon Icon="{x:Static ui:FluentSystemIcons.Options_20_Regular}" />
+                                    </ui:SettingsCard.HeaderIcon>
+                                    <ui:ToggleSwitch x:Name="FixedGbSwitch" Toggled="FixedGbSwitch_Toggled" />
+                                </ui:SettingsCard>
+
+                                <!-- 多月历史保留月数（2026-11-12 加）。历史写在配置同目录的
+                                     net_history.json，跨月时把上个月的最终数字存一条，超出保留数就裁掉最早的。
+                                     用下拉而不是数字框：可选值就那几档，数字框还要处理非法输入与空值。
+                                     默认 3 个月 —— 「保底」的语义：至少留住上个季度。 -->
+                                <ui:SettingsCard x:Name="NetHistoryCard" Header="流量历史保留"
+                                                 Description="跨月时把上个月的最终数字存进 net_history.json（与配置同目录），超出保留月数的自动裁掉最早的。默认 3 个月，最多 12 个月（再多详情弹窗那一行会拉得太长）；删掉这个文件只丢历史，不影响配置与本月累计。">
+                                    <ui:SettingsCard.HeaderIcon>
+                                        <ui:FontIcon Icon="{x:Static ui:FluentSystemIcons.History_20_Regular}" />
+                                    </ui:SettingsCard.HeaderIcon>
+                                    <ComboBox x:Name="NetHistoryKeepCombo" MinWidth="110"
+                                              SelectionChanged="NetHistoryKeepCombo_SelectionChanged">
+                                        <ComboBoxItem Content="保留 3 个月" Tag="3" />
+                                        <ComboBoxItem Content="保留 6 个月" Tag="6" />
+                                        <ComboBoxItem Content="保留 9 个月" Tag="9" />
+                                        <ComboBoxItem Content="保留 12 个月" Tag="12" />
+                                    </ComboBox>
+                                </ui:SettingsCard>
+
+                                <!-- 往月那一行的显示开关。默认关：关掉只影响显示，历史照样按月记录。 -->
+                                <ui:SettingsCard Header="显示往月流量"
+                                                 Description="在「网络」详情弹窗底部多显示一行「往月：…」，列出最近几个已过去月份的累计。默认关闭 —— 打开会让弹窗多一两行；关掉只影响显示，历史照样按月记录。">
+                                    <ui:SettingsCard.HeaderIcon>
+                                        <ui:FontIcon Icon="{x:Static ui:FluentSystemIcons.History_20_Regular}" />
+                                    </ui:SettingsCard.HeaderIcon>
+                                    <ui:ToggleSwitch x:Name="NetHistoryShowSwitch" Toggled="NetHistoryShowSwitch_Toggled" />
+                                </ui:SettingsCard>
+                            </ui:SettingsExpander.Items>
                         </ui:SettingsExpander>
 
                         <!-- 悬浮模式: the overlay leaves the taskbar entirely and lives on the
@@ -673,8 +746,12 @@
                                      joins the Network detail list as standalone "Clash"-tagged rows
                                      (ClashSampler). Switch reports immediately, text edits debounced
                                      (500ms); 测试连接 probes the CURRENT box contents via GET /version. -->
+                                <!-- 文案按实际行为写（2026-11-16）：轮询内核 /connections，按**进程**汇总
+                                     Δbytes/interval，只补「经代理的那部分」速率；前提是内核开了
+                                     external-controller（默认 127.0.0.1:9090）。原文只写「同步实时网速」，
+                                     用户填了地址连不上时不知道要开这个开关。 -->
                                 <ui:SettingsCard Header="Clash / Mihomo"
-                                                 Description="从代理内核同步实时网速至进程列表。">
+                                                 Description="按进程汇总「经代理」的流量，补进进程列表。需内核已开启 external-controller（地址留空 = 127.0.0.1:9090）。">
                                     <StackPanel>
                                         <ui:ToggleSwitch x:Name="ClashSwitch" OnContent="启用" OffContent="关闭"
                                                          Toggled="ClashSwitch_Toggled" />

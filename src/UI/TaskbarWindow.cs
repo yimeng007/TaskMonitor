@@ -59,7 +59,10 @@ namespace task_monitor
         // bottom row moves to the next cell, leaving an intentional alignment hole.
         // ComputeLayout derives drawing, hit-testing and popup anchors from the same geometry.
         private const float ITEM_GAP = 0f;                 // groups sit flush against each other
-        private static readonly float[] GroupWidths = { 70f, 70f, 70f, 96f }; // stacked cell ×3, 网络 (DIPs at 96 DPI)
+        // 四组同宽（2026-11-16 用户要求）：网络那组原本是 96（要容下「↑ 3.1 KB/s」），
+        // 结果三列里它比别的宽 26 DIP，看着像一列没对齐。改成与其它三组一致后，
+        // 竖排/横排里所有列宽都相等；数值特别长时靠缩小该格字号/省略处理（见 Draw 的网络格）。
+        private static readonly float[] GroupWidths = { 70f, 70f, 70f, 86f }; // 四组同宽 (DIPs at 96 DPI)
         private const int GroupCount = 4;                  // up to four two-row cells
         private const int SlotCount = 5;                   // hit slots: CPU/内存/磁盘/GPU/网络
         private const int PackedPositionCount = 8;         // five items + GPU's second row + alignment holes
@@ -144,7 +147,7 @@ namespace task_monitor
         // line box without grazing the row boundaries, which is the "仍保持美观" half of
         // the ask; the two-line block keeps ≥1 DIP of derived line slack at 40. The
         // one-line strip's own 16-DIP pitch is ALREADY the compact form — untouched.
-        private static readonly float[] CompactGroupWidths = { 65f, 65f, 65f, 90f };
+        private static readonly float[] CompactGroupWidths = { 65f, 65f, 65f, 80f };  // 同上：紧凑模式也同宽
         private static float GroupW(int g, bool compact) => (compact ? CompactGroupWidths : GroupWidths)[g];
         private static float GridRowH(bool compact) => compact ? 18f : GRID_ROW_H;
         private static float StripBlockH(bool compact) => compact ? 40f : STRIP_BLOCK_H;
@@ -1423,7 +1426,9 @@ namespace task_monitor
 
             // Net column's ↑/↓ rates flush-RIGHT to line up on the column's right edge,
             // matching the stacked groups' right-aligned numeric column.
-            var netFormat = dwrite.CreateTextFormat("Segoe UI", 13f);
+            // 字号比其它列小一号（13→12）：网络格的数字最宽（"23.1 KB/s"），
+            // 与其它列同宽时箭头和数字会贴在一起；小一号能省出 ~5px 当缝隙（2026-11-16）。
+            var netFormat = dwrite.CreateTextFormat("Segoe UI", 12f);
             netFormat.Object.SetTextAlignment(DWRITE_TEXT_ALIGNMENT.DWRITE_TEXT_ALIGNMENT_TRAILING);
             netFormat.Object.SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT.DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
             netFormat.Object.SetWordWrapping(DWRITE_WORD_WRAPPING.DWRITE_WORD_WRAPPING_NO_WRAP);

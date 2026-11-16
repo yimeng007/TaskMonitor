@@ -46,8 +46,13 @@
                         VerticalAlignment="Center"
                         Click="RefreshIp_Click"
                         ToolTip="立即重查公网 IP 与地区">
-                    <ui:FontIcon FontSize="14"
-                                 Icon="{x:Static ui:FluentSystemIcons.ArrowSync_20_Regular}" />
+                    <ui:FontIcon x:Name="RefreshIpIcon" FontSize="14"
+                                 RenderTransformOrigin="0.5,0.5"
+                                 Icon="{x:Static ui:FluentSystemIcons.ArrowSync_20_Regular}">
+                        <ui:FontIcon.RenderTransform>
+                            <RotateTransform x:Name="RefreshIpIconRotate" Angle="0" />
+                        </ui:FontIcon.RenderTransform>
+                    </ui:FontIcon>
                 </Button>
             </StackPanel>
             <ikw:SimpleStackPanel HorizontalAlignment="Right" VerticalAlignment="Center">
@@ -129,7 +134,11 @@
                 <Run x:Name="BandValueRun" Text="—" />
             </TextBlock>
 
-            <StackPanel Grid.Row="2" Grid.Column="0" Orientation="Horizontal" Margin="0,0,0,8">
+            <!-- 本机 / 公网 IPv4：原本各占一格（Row2 的 col0 / col1）。IP 一长就压到右列上，
+                 变成「192.168.163.128公网 IPv4：…」粘成一句（2026-11-16 虚拟机截图）。
+                 改成 WrapPanel 跨两列：宽度够就并排，不够则**整块**折行，IP 本身永远不被切断。 -->
+            <WrapPanel Grid.Row="2" Grid.Column="0" Grid.ColumnSpan="2" Margin="0,0,0,8">
+            <StackPanel Orientation="Horizontal" Margin="0,0,16,0">
                 <!-- The label adapts in code: LocalIp falls back to a global v6 address
                      when there's no v4, so it reads 本机 IPv6： in that case. -->
                 <TextBlock x:Name="LocalIpLabel" Text="本机 IPv4：" FontSize="12" VerticalAlignment="Center"
@@ -150,7 +159,7 @@
                     <TextBlock Text="—" />
                 </ui:HyperlinkButton>
             </StackPanel>
-            <StackPanel Grid.Row="2" Grid.Column="1" Orientation="Horizontal" Margin="0,0,0,8">
+            <StackPanel Orientation="Horizontal">
                 <TextBlock Text="公网 IPv4：" FontSize="12" VerticalAlignment="Center"
                            Foreground="{DynamicResource TextFillColorSecondaryBrush}" />
                 <ui:HyperlinkButton x:Name="PublicIpButton" FontSize="12" Padding="0"
@@ -160,6 +169,7 @@
                     <TextBlock Text="—" />
                 </ui:HyperlinkButton>
             </StackPanel>
+            </WrapPanel>
 
             <!-- Full-width v6 row ABOVE the latency row (a compressed literal is still ~30
                  chars — busts one column). A Grid, not a StackPanel: the * column hands the
@@ -219,9 +229,9 @@
                 <!-- 多月历史（2026-11-12 加）：只列**已经过去的月份**，最多 6 条，一行放不下自动换行。
                      当月的数字上面「本月」已经写了，这里再列一遍只会重复。历史不足 2 个月（只有当月）
                      时整行隐藏 —— 空着一条「近几个月：—」比不显示更难看。
-                     数据来自 exe 同目录的 net_history.json（NetUsage → NetHistory）。 -->
+                     数据来自与配置同目录的 net_history.json（路径见 AppPaths；NetUsage → NetHistory）。 -->
                 <WrapPanel x:Name="MonthHistoryCell" Margin="0,9,0,0" Visibility="Collapsed"
-                           ToolTip="往月累计，来自 exe 同目录的 net_history.json；保留几个月见「设置 → 外观 → 流量历史保留」。">
+                           ToolTip="往月累计，来自与配置同目录的 net_history.json；保留几个月见「设置 → 外观 → 流量历史保留」。">
                     <TextBlock Text="往月：" FontSize="12"
                                Foreground="{DynamicResource TextFillColorSecondaryBrush}" />
                 </WrapPanel>

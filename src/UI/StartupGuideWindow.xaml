@@ -229,6 +229,15 @@
                     </RadioButton>
                 </StackPanel>
 
+                <!-- 开机自启：首次运行就把这件事问清楚。
+                     以前不闻不问，用户装了之后在设置页看到「开/关」会疑惑「我没调过，怎么是开的」
+                     （2026-11-16 反馈）。这里的初值取真实状态：已有任务指向本程序 → 勾上；否则不勾。
+                     用户的勾选在「完成/下一步」时由 App 应用（见 ShowStartupGuide）。 -->
+                <CheckBox x:Name="AutoStartCheck"
+                          Content="开机自启动（登录时自动启动，不弹 UAC；以后可在「设置 → 通用」修改）"
+                          HorizontalAlignment="Center"
+                          Margin="0,16,0,0" />
+
                 <!-- 兼容性提示：文案与上游 v2026.11.7.1 保持一致（用户 2026-11-12 定：
                      上游本来就这么写，就不自行改动；点名与否留给后续变化时再研究）。 -->
                 <ui:InfoBar x:Name="TaskbarWarning"

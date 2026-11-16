@@ -17,6 +17,9 @@ namespace task_monitor
 
         public bool UseFloatingMode => FloatingOption.IsChecked == true;
 
+        /// <summary>首次运行向导里「开机自启动」的勾选结果（由 App 在完成后应用）。</summary>
+        public bool AutoStartChosen => AutoStartCheck.IsChecked == true;
+
         // The three placement cards, as anchors: 0 = far left, 1 = next to Start, 2 = tray side.
         // This used to be expressed as "not on the left" (OverlayOnLeft = TrayOption unchecked),
         // which was correct while onLeft:false meant the tray. The placement rework turned
@@ -38,6 +41,21 @@ namespace task_monitor
             _taskbarCentered = taskbarCentered;
             _taskbarVertical = taskbarVertical;
             StartOption.IsEnabled = snapToStartSupported;
+
+            // **恒定默认勾上**（2026-11-16 用户定）。
+            // 以前初值取「任务是否指向本程序」—— 同一个安装包在不同文件夹里跑，任务指向不同，
+            // 勾选状态就会变，看起来像「有时开、有时关」。首次运行向导只在「没配置/删过配置」时出现，
+            // 这种场景统一默认开：用户要关就自己取消，勾选状态从此刻起以他自己的操作为准。
+            AutoStartCheck.IsChecked = true;
+
+            // 压缩包临时目录里跑（程序落在 %TEMP%ðzip$Temp\…）：注册会被拒，
+            // 与其让用户勾了没效果，不如直接置灰并说明。
+            if (StartupTask.IsRunningFromTransientLocation())
+            {
+                AutoStartCheck.IsChecked = false;
+                AutoStartCheck.IsEnabled = false;
+                AutoStartCheck.Content = "开机自启动（当前在压缩包临时目录中运行，解压到文件夹后可开启）";
+            }
             FloatingOption.Checked += ModeOption_Checked;
             TaskbarOption.Checked += ModeOption_Checked;
             // Three mutually exclusive placement pages: side bar (nothing to pick),

@@ -306,7 +306,20 @@ namespace task_monitor
                 _onLeftHost = OnLeftCard;
             }
             PopulateDisplayPicker(displays, selectedDisplays);
+
+            // 外观页分组折叠（2026-11-16）：点标题收起/展开整组。默认全部展开。
+            WireSection(SecTaskbarToggle, SecTaskbarBody, SecTaskbarChevronRotate, SecTaskbarSlide);
+            WireSection(SecDisplayToggle, SecDisplayBody, SecDisplayChevronRotate, SecDisplaySlide);
+
             AutoStartSwitch.IsOn = autoStartOn;
+
+            // 从压缩包临时目录里运行：这种「自启」绑上去就会随临时目录一起消失，
+            // 所以显示为关并说明原因 —— 否则用户会看到「我没开过，怎么是开的」（2026-11-16）。
+            if (StartupTask.IsRunningFromTransientLocation())
+            {
+                AutoStartCard.Description = "当前在压缩包临时目录中运行，无法开启；请先把程序解压到文件夹再运行。";
+                AutoStartSwitch.IsEnabled = false;
+            }
             ThemeCombo.SelectedIndex = themeIndex < 0 || themeIndex > 2 ? 0 : themeIndex;
             CompactSwitch.IsOn = compactLayout;
             ShowSeparatorsSwitch.IsOn = showSeparators;
@@ -509,6 +522,174 @@ namespace task_monitor
             PopulateItemOrder(order);
             _itemOrderChanged?.Invoke(order);
             e.Handled = true;
+        }
+
+        /// <summary>分组折叠动画时长：比提示条（150ms）略长一点 —— 收起的是整组卡片，位移更大。</summary>
+        private static readonly TimeSpan SectionAnimDuration = TimeSpan.FromMilliseconds(220);
+
+        /// <summary>折叠滑入的距离（DIP）：内容从上方 -10 滑到 0，收起时反向。</summary>
+        private const double SectionSlideDip = 10d;
+
+        /// <summary>
+        /// 把「分组标题（ToggleButton）」和「组体（StackPanel）」接起来：勾上则展开，取消则收起。
+        /// 不用 SettingsExpander 嵌套是因为嵌套会出现双边框 + 圆角错位。
+        ///
+        /// 高度 + 透明度一起动（和 贴边提示条 同一套写法）：先量出目标高度，把高度压回 0 开始动画，
+        /// 结束后交回 Auto —— 否则窗口缩放/换 DPI 时组内卡片高度变了，写死的高度会把它裁掉。
+        /// </summary>
+        private void WireSection(System.Windows.Controls.Primitives.ToggleButton toggle,
+                                 System.Windows.FrameworkElement body,
+                                 System.Windows.Media.RotateTransform chevron,
+                                 System.Windows.Media.TranslateTransform slide)
+        {
+            if (toggle == null || body == null) return;
+
+            ApplyChevron(chevron, expanded: toggle.IsChecked == true);
+
+            if (toggle.IsChecked == true)
+            {
+                body.Visibility = Visibility.Visible;
+            }
+            else
+            {
+                body.Height = 0;
+                body.Opacity = 0;
+                body.Visibility = Visibility.Collapsed;
+            }
+
+            toggle.Checked += (s, e) =>
+            {
+                ApplyChevron(chevron, expanded: true);
+                AnimateSection(body, slide, expand: true);
+            };
+            toggle.Unchecked += (s, e) =>
+            {
+                ApplyChevron(chevron, expanded: false);
+                AnimateSection(body, slide, expand: false);
+            };
+        }
+
+        /// <summary>
+        /// 展开时箭头朝上（⌃，提示「点这里收起」），收起时朝下（⌄，提示「点这里展开」）。
+        /// 直接赋 Icon，不靠模板 Trigger —— Trigger 里对 FontIcon.Icon 的 setter 实测不生效。
+        /// </summary>
+        /// <summary>
+        /// 箭头随折叠状态转 180°（0° = 朝上 = 已展开；180° = 朝下 = 已收起）。
+        /// 用旋转而不是「换图标」：换图标是一帧内跳变，看着生硬（2026-11-16 用户反馈）。
+        /// </summary>
+        private static void ApplyChevron(System.Windows.Media.RotateTransform chevron, bool expanded)
+        {
+            if (chevron == null) return;
+            chevron.BeginAnimation(System.Windows.Media.RotateTransform.AngleProperty,
+                new System.Windows.Media.Animation.DoubleAnimation(
+                    expanded ? 0d : 180d,
+                    TimeSpan.FromMilliseconds(160))
+                {
+                    EasingFunction = new System.Windows.Media.Animation.CubicEase
+                    {
+                        EasingMode = System.Windows.Media.Animation.EasingMode.EaseInOut
+                    },
+                    FillBehavior = System.Windows.Media.Animation.FillBehavior.HoldEnd
+                });
+        }
+
+        /// <summary>
+        /// 折叠/展开一段。**最终状态由「基线值」决定，不靠动画 Completed** ——
+        /// 这是 2026-11-16 那个「折叠后留下一条 40px 空框」的根因：动画被打断
+        /// （重排、切页、快速连点）时 Completed 不触发，Height 就冻在中间值，留下半截空壳。
+        ///
+        /// 现在：展开 → 基线 Height=Auto，动画从 0 涨到目标，FillBehavior=Stop（结束后自动落回基线）；
+        ///       收起 → 基线 Height=0，动画从当前降到 0，结束后同样落回基线 0。
+        /// 于是无论动画有没有跑完，结果都是对的；Completed 只负责把 Visibility 收掉。
+        /// </summary>
+        private void AnimateSection(System.Windows.FrameworkElement body,
+                                    System.Windows.Media.TranslateTransform slide, bool expand)
+        {
+            if (body == null) return;
+
+            var ease = new System.Windows.Media.Animation.CubicEase
+            {
+                // 展开/收起都用 EaseInOut：起手和收尾都放缓，点击时不会「一顿一跳」。
+                EasingMode = System.Windows.Media.Animation.EasingMode.EaseInOut
+            };
+
+            if (expand)
+            {
+                body.BeginAnimation(FrameworkElement.HeightProperty, null);
+                body.Visibility = Visibility.Visible;
+                body.Height = double.NaN;                 // 基线 = Auto
+                body.UpdateLayout();
+                double target = body.ActualHeight;
+                if (target <= 0) { body.Opacity = 1; return; }   // 还没排过版：直接显示
+
+                // 滑入：内容起初上移 10px，与高度一起落位 —— 就是悬浮模式那种「往下推开」的感觉。
+                if (slide != null)
+                {
+                    slide.BeginAnimation(System.Windows.Media.TranslateTransform.YProperty,
+                        new System.Windows.Media.Animation.DoubleAnimation(
+                            -SectionSlideDip, 0, SectionAnimDuration)
+                        {
+                            EasingFunction = ease,
+                            FillBehavior = System.Windows.Media.Animation.FillBehavior.Stop
+                        });
+                }
+
+                body.BeginAnimation(FrameworkElement.HeightProperty,
+                    new System.Windows.Media.Animation.DoubleAnimation(0, target, SectionAnimDuration)
+                    {
+                        EasingFunction = ease,
+                        FillBehavior = System.Windows.Media.Animation.FillBehavior.Stop
+                    });
+                body.BeginAnimation(UIElement.OpacityProperty,
+                    new System.Windows.Media.Animation.DoubleAnimation(0, 1, SectionAnimDuration)
+                    {
+                        FillBehavior = System.Windows.Media.Animation.FillBehavior.Stop
+                    });
+            }
+            else
+            {
+                double current = body.ActualHeight;
+
+                body.BeginAnimation(FrameworkElement.HeightProperty, null);
+                body.Height = 0;                          // 基线 = 0：动画没跑完也是收起的
+                body.Visibility = Visibility.Visible;     // 先保持可见，让收起动画能被看到
+
+                if (current <= 0)
+                {
+                    body.Opacity = 1;
+                    body.Visibility = Visibility.Collapsed;
+                    return;
+                }
+
+                var shrink = new System.Windows.Media.Animation.DoubleAnimation(current, 0, SectionAnimDuration)
+                {
+                    EasingFunction = ease,
+                    FillBehavior = System.Windows.Media.Animation.FillBehavior.Stop
+                };
+                shrink.Completed += (s2, e2) =>
+                {
+                    body.BeginAnimation(UIElement.OpacityProperty, null);
+                    body.Opacity = 1;                     // 复位：下次展开从 0 开始淡入
+                    body.Visibility = Visibility.Collapsed;
+                };
+                if (slide != null)
+                {
+                    // 滑出：内容往上收 10px，配合高度缩小 —— 收得「有方向」，不是原地消失。
+                    slide.BeginAnimation(System.Windows.Media.TranslateTransform.YProperty,
+                        new System.Windows.Media.Animation.DoubleAnimation(
+                            0, -SectionSlideDip, SectionAnimDuration)
+                        {
+                            EasingFunction = ease,
+                            FillBehavior = System.Windows.Media.Animation.FillBehavior.Stop
+                        });
+                }
+                body.BeginAnimation(FrameworkElement.HeightProperty, shrink);
+                body.BeginAnimation(UIElement.OpacityProperty,
+                    new System.Windows.Media.Animation.DoubleAnimation(1, 0, SectionAnimDuration)
+                    {
+                        FillBehavior = System.Windows.Media.Animation.FillBehavior.Stop
+                    });
+            }
         }
 
         private void PopulateDisplayPicker(IReadOnlyList<TaskbarDisplayInfo> displays,

@@ -32,12 +32,13 @@ namespace task_monitor
     }
 
     /// <summary>
-    /// Persistent settings store — <c>settings.yaml</c> in the exe's own directory (the
-    /// run directory; resolved from <see cref="AppDomain.BaseDirectory"/> because the
-    /// working directory is not stable across the runas self-relaunch). The single store
-    /// for ALL settings; each key is documented on its own property below. The 开机自启动
-    /// toggle is deliberately NOT here — the scheduled task itself is the state
-    /// (<see cref="StartupTask"/>).
+    /// Persistent settings store — <c>settings.yaml</c>，位置由 <see cref="AppPaths"/> 决定：
+    /// 默认跟 exe 同目录（绿色便携）；exe 单独躺在桌面 / 下载 / 临时目录、或目录不可写时，
+    /// 改用 <c>%LOCALAPPDATA%\TaskMonitor\</c>，免得这些地方凭空多出配置文件与 logs\。
+    /// 用绝对路径而不是当前工作目录解析 —— runas 自我重启后工作目录并不稳定。
+    /// The single store for ALL settings; each key is documented on its own property below.
+    /// The 开机自启动 toggle is deliberately NOT here — the scheduled task itself is the
+    /// state (<see cref="StartupTask"/>).
     /// </summary>
     public sealed class AppSettings
     {
@@ -429,8 +430,9 @@ namespace task_monitor
         public bool? NetUsageFixedGb { get; set; }
 
 
-        public static string FilePath { get; } =
-            Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "settings.yaml");
+        // 数据目录由 AppPaths 决定：默认跟 exe（便携），但 exe 单独躺在桌面/下载/临时目录时
+        // 改用 %LOCALAPPDATA%\TaskMonitor\，免得这些地方凭空多出 settings.yaml 与 logs\。
+        public static string FilePath => AppPaths.SettingsFile;
 
         public static AppSettings Load()
         {

@@ -124,6 +124,13 @@ namespace task_monitor
 
             Logger.Info($"启动 — 版本 {VersionInfo.Current}，OS {Environment.OSVersion}，Win11+={TaskbarWindow.IsWin11OrLater}");
 
+            // 开机自启动的任务里记着「注册那一刻的 exe 路径」：换过位置（重新解压 / 换目录 /
+            // 从单文件版换文件夹版）之后任务还在、设置页仍显示「开」，但每次登录都在启动一个
+            // 不存在的文件（任务计划 LastResult=0x80070002），界面毫无提示。
+            // 这里在启动时校正一次：只有用户已经开过自启（任务存在）才改写，不新建、不弹窗。
+            // 常驻提权进程才能读系统任务文件、也才改得动 HighestAvailable 任务，故放在提权门之后。
+            StartupTask.RefreshIfEnabled();
+
             // Repaint already-open detail windows on ANY effective theme flip — the 设置
             // 主题 combo, or a system-theme change while 跟随系统 (the iNKORE ThemeManager
             // tracks it and fires this; everything DynamicResource-driven — the settings
@@ -417,6 +424,13 @@ namespace task_monitor
             {
                 Logger.Info("首次启动引导已跳过——使用默认显示方式");
             }
+            // 向导里的「开机自启动」勾选：只在和当前真实状态不同时才动手（避免多余的 schtasks 调用）。
+            if (StartupTask.IsEnabledForCurrentExe() != guide.AutoStartChosen)
+            {
+                bool ok = StartupTask.SetEnabled(guide.AutoStartChosen);
+                Logger.Info($"首次启动引导：开机自启动 = {guide.AutoStartChosen}（{(ok ? "已应用" : "应用失败，保持原状")}）");
+            }
+
             _config.StartupGuideCompleted = true;
             TrySaveConfig();
         }
@@ -834,7 +848,7 @@ namespace task_monitor
             _settings = new SettingsWindow(
                 _config.OverlayOnLeft != false, AnchorIndexOf(_config), OnOverlayPlacementChanged,
                 SupportsSnapToStart(displays, _config.TaskbarDisplays), displays, _config.TaskbarDisplays, OnTaskbarDisplaysChanged,
-                StartupTask.IsEnabled(), OnAutoStartChanged,
+                StartupTask.IsEnabledForCurrentExe(), OnAutoStartChanged,
                 ThemeIndexOf(_config.Theme), OnThemeChanged,
                 _config.CompactLayout == true, OnCompactLayoutChanged,
                 _config.ShowSeparators != false, OnShowSeparatorsChanged,
@@ -1183,7 +1197,7 @@ namespace task_monitor
         private void OnAutoStartChanged(bool on)
         {
             if (StartupTask.SetEnabled(on)) return;
-            _settings?.SyncAutoStart(StartupTask.IsEnabled());
+            _settings?.SyncAutoStart(StartupTask.IsEnabledForCurrentExe());
         }
 
         // 主题 combo: 0=跟随系统 (yaml null — the ThemeManager tracks the system theme

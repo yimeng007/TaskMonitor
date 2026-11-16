@@ -35,6 +35,14 @@ namespace task_monitor
         public string PublicIpV6;       // same, over IPv6; null when no v6 connectivity
         public long GatewayRttMs = -1;  // ICMP RTT to the default gateway ("本地延迟")
         public long PublicRttMs = -1;   // ICMP RTT to the public probe ("公网延迟")
+        // 本次探测失败、显示的是**上一次有效值**时为 true（UI 加 "~" 前缀提示"可能不是最新"）。
+        // 以前一次超时就直接显示 "—"，延迟线看上去忽有忽无（2026-11-16 用户反馈）。
+        public bool GatewayRttStale;
+        public bool PublicRttStale;
+        // 延迟是**TCP 握手**量出来的（ICMP 被拦、从未成功过时才启用）→ UI 显示 "≈44 ms"，
+        // 说明口径与 ICMP 不同（含握手开销，通常比 ping 略高几 ms）。
+        public bool GatewayRttViaTcp;
+        public bool PublicRttViaTcp;
         public string ProxyNote;        // 代理活动来源（隧道网卡名 / 「系统代理 host:port」）；null = 无。
                                         // 仅用于界面提示「经代理」——统计口径仍是物理网卡。
 
@@ -96,6 +104,8 @@ namespace task_monitor
         };
 
         private const int PingTimeoutMs = 1000;
+        /// <summary>TCP 兜底握手的超时（比 ping 略短：握手要么很快要么压根不通）。</summary>
+        private const int TcpProbeTimeoutMs = 800;
         private const int HttpTimeoutMs = 3000;
         // 出口 IP 变化检测：10 分钟才查一次，所以「切换」最多滞后一个刷新周期 —— 这是刻意的，
         // 加频会让「轻」的定位失守。只记住上一次的 IP 与变化时刻，不引入任何新的外部服务。
@@ -291,14 +301,42 @@ namespace task_monitor
             info.PublicIpChangedAt = _publicIpChangedAt;
             info.GeoLabel = _geoLabel;
             info.PublicIpV6 = hasGlobalV6 ? _publicIpV6 : null;
+
+            // **延迟也要带上上一轮的值**：这一拍的 ICMP 探测在下面几十毫秒后才完成，
+            // 而 NetInfo 是结构体，新建时 GatewayRttMs/PublicRttMs 默认是 -1。
+            // 以前这里直接发布 → UI 每秒刷新时大多撞上"还没探测"的那一版，于是延迟显示 "—"
+            // （宿主实测：采样层算出 4/37，UI 收到 -1；虚拟机轮询节奏不同所以看着正常）。
+            // 先填上次的有效值并标 stale，探测完成后下面会覆盖成最新值。
+            info.GatewayRttMs = _gwLast;
+            info.GatewayRttStale = _gwLast >= 0 && _gwLastStale;
+            info.PublicRttMs = _pubLast;
+            info.PublicRttStale = _pubLast >= 0 && _pubLastStale;
+
             _latest = info.ShallowCopy();
 
             // The two latency probes (named ProbeRttMs — "Ping" would collide with the type).
             // ICMP needs no elevation (the app is elevated anyway). The gateway probe is
             // LAN-only and always runs; the 公网延迟 probe shares the 公网 IP switch — off
             // = the app sends no traffic to the public internet at all.
-            info.GatewayRttMs = gateway != null ? ProbeRttMs(gateway.ToString()) : -1;
-            info.PublicRttMs = _publicIpLookupEnabled ? ProbeRttMs(PublicProbeHost) : -1;
+            // 延迟：3 次滑动窗口取中位数（抹掉抖动），失败时沿用上一次有效值并标 stale。
+            info.GatewayRttMs = ProbeSmooth(gateway != null ? gateway.ToString() : null,
+                                            _gwSamples, ref _gwLast, out bool gwStale, out bool gwTcp,
+                                            allowTcpFallback: false);   // 网关通常不开 443，不做 TCP 兜底
+            info.GatewayRttStale = gwStale;
+            info.GatewayRttViaTcp = gwTcp;
+
+            bool pubStale = false, pubTcp = false;
+            info.PublicRttMs = _publicIpLookupEnabled
+                ? ProbeSmooth(PublicProbeHost, _pubSamples, ref _pubLast, out pubStale, out pubTcp,
+                              allowTcpFallback: true)                   // www.baidu.com:443 可握手
+                : -1;
+            info.PublicRttStale = _publicIpLookupEnabled && pubStale;
+            info.PublicRttViaTcp = _publicIpLookupEnabled && pubTcp;
+
+            // 记住本轮真实状态，供下一次「快发布」沿用（避免 ~ 与正常值来回跳）
+            _gwLastStale = gwStale;
+            _pubLastStale = pubStale;
+
 
             if (nic.Id != _adapterId)
             {
@@ -494,6 +532,73 @@ namespace task_monitor
         // literal — for PublicProbeHost the DNS resolution happens inside Send and can add
         // its own seconds on a broken resolver; acceptable here (only ever called on the
         // poll thread, never the taskbar STA). Never throws.
+        // 延迟的滑动窗口（最近 3 次成功采样）与最后有效值
+        private readonly System.Collections.Generic.Queue<long> _gwSamples = new System.Collections.Generic.Queue<long>();
+        private readonly System.Collections.Generic.Queue<long> _pubSamples = new System.Collections.Generic.Queue<long>();
+        private long _gwLast = -1, _pubLast = -1;
+        // 上一轮**探测结果**里的 stale 标记。快发布时连它一起沿用，
+        // 这样两拍之间显示不会在 "6 ms" / "~6 ms" 之间来回跳（~ 只代表"上一轮没探到"）。
+        private bool _gwLastStale, _pubLastStale;
+
+        /// <summary>
+        /// 探测一次并平滑：成功 → 入窗、取中位数、stale=false；失败 → 沿用上次有效值、stale=true。
+        /// 为什么取中位数而不是平均：ICMP 偶发尖峰（几十 ms）会把平均值拉高，中位数不受影响。
+        /// why keep-last：一次超时就显示 "—" 会让延迟看起来忽有忽无，用户无法判断"是真的差还是探测失败"
+        /// （2026-11-16 反馈）。显示 "~12 ms" 表示"上次测到的值，本次未取到"。
+        /// </summary>
+        private static long ProbeSmooth(string hostOrAddress,
+                                        System.Collections.Generic.Queue<long> ring,
+                                        ref long last, out bool stale, out bool viaTcp,
+                                        bool allowTcpFallback)
+        {
+            viaTcp = false;
+            long rtt = string.IsNullOrEmpty(hostOrAddress) ? -1 : ProbeRttMs(hostOrAddress);
+            if (rtt >= 0)
+            {
+                ring.Enqueue(rtt);
+                while (ring.Count > 3) ring.Dequeue();
+                var arr = ring.ToArray();
+                System.Array.Sort(arr);
+                last = arr[arr.Length / 2];
+                stale = false;
+                return last;
+            }
+
+            // ICMP 没回包。两种处理：
+            //   ① 历史上有过 ICMP 成功 → 说明只是这次丢了，沿用上次值并标 stale（口径保持一致）；
+            //   ② 从来没有过 ICMP 成功 → 多半是网络/防火墙整体拦 ICMP（虚拟机 NAT 很常见），
+            //      改用 TCP 443 握手量一次，给个能看的数（口径不同，UI 会显示 "≈"）。
+            if (ring.Count == 0 && allowTcpFallback)
+            {
+                long tcp = ProbeTcpMs(hostOrAddress, 443);
+                if (tcp >= 0) { stale = false; viaTcp = true; return tcp; }
+            }
+
+            stale = true;
+            return last;      // -1 = 从未成功过（UI 显示 —）
+        }
+
+        /// <summary>
+        /// 用 TCP 三次握手量延迟（只作 ICMP 的兜底）：
+        /// <c>ConnectAsync</c> 到 443，等 <see cref="TcpProbeTimeoutMs"/>，成功则取握手耗时。
+        /// 不依赖 ICMP 是否被拦；对目标就是一次正常的 HTTPS 连接，随即关闭。
+        /// </summary>
+        private static long ProbeTcpMs(string host, int port)
+        {
+            try
+            {
+                using (var c = new System.Net.Sockets.TcpClient())
+                {
+                    var sw = System.Diagnostics.Stopwatch.StartNew();
+                    var task = c.ConnectAsync(host, port);
+                    if (!task.Wait(TcpProbeTimeoutMs)) return -1;
+                    sw.Stop();
+                    return c.Connected ? sw.ElapsedMilliseconds : -1;
+                }
+            }
+            catch { return -1; }
+        }
+
         private static long ProbeRttMs(string hostOrAddress)
         {
             try
