@@ -184,6 +184,9 @@ namespace task_monitor
             bool refreshing = DateTime.UtcNow < _ipRefreshGraceUntil;
             if (!(refreshing && string.IsNullOrEmpty(info.PublicIp) && PublicIpButton.Tag is string))
                 SetIpButton(PublicIpButton, info.PublicIp);
+            // 只要经代理就提示一次位置说明：换节点后点刷新可立即重查。
+            // （不按档位显示 —— 那会导致"显示→消失→再现"的闪烁，见 NetInfo.ShowRefreshHint 注释。）
+            RefreshHintText.Visibility = info.ShowRefreshHint ? Visibility.Visible : Visibility.Collapsed;
             UpdatePublicIpChangeMark(info);
             // Full-width v6 row: absent (no v6 connectivity / lookup pending) → the whole
             // cell collapses, like the Wi-Fi cells — a permanent "—" row would just be a
@@ -194,7 +197,15 @@ namespace task_monitor
             // whose text can trim (CharacterEllipsis), so the tooltip doubles as the
             // untrimmed-address readout. The other two sit in horizontal StackPanels
             // (infinite width) and never trim.
-            SetIpButton(PublicIpV6Button, info.PublicIpV6, echoAddress: true);
+            // 公网 IPv6 是**直连**查的（v6 走不通代理的 CONNECT），所以经代理时它显示的还是
+            // 本机真实 v6 地址。tooltip 只陈述「它是什么」，不写「不随代理变化 / 跟随代理的是 v4」——
+            // 那种写法会让人以为两者本该同步（2026-11-17 反馈：读起来像「v4 变了 v6 就该跟上」）。
+            // 经代理时 v6 一定是「直连地址」（代理只转发 v4 的 TCP 连接），与 v4 的代理出口
+            // 天然不是同一条路径 —— 光靠 tooltip 说明不够显眼，直接在标签上标出来
+            // （2026-11-17 反馈：看到「v4 是海外、v6 是国内」会以为程序算错了）。
+            PublicIpV6Label.Text = string.IsNullOrEmpty(info.ProxyNote) ? "公网 IPv6：" : "公网 IPv6（直连）：";
+            SetIpButton(PublicIpV6Button, info.PublicIpV6, echoAddress: true,
+                        note: string.IsNullOrEmpty(info.ProxyNote) ? null : "本机宽带的 IPv6 地址，直连不经代理");
             UpdatePublicIpEye();
             // stale = 本次没探到、显示的是上次有效值 → 前面加 "~"，
             // 让人分得清「真的 12ms」和「上次是 12ms、这次没测到」。
@@ -246,7 +257,11 @@ namespace task_monitor
         private static string BuildConnTip(NetInfo info, string connText)
         {
             if (string.IsNullOrEmpty(info.ProxyNote)) return connText;
-            return connText + "\n隧道网卡：" + info.ProxyNote
+            // 措辞要跟代理方式对上（2026-11-17）：ProxyNote 可能是「隧道网卡名」（TUN 模式）也可能是
+            // 「系统代理 host:port」（PAC / HTTP 代理模式），一律写「隧道网卡：」是错的。
+            bool tun = !info.ProxyNote.StartsWith("系统代理", StringComparison.Ordinal);
+            return connText
+                + (tun ? "\n隧道网卡：" : "\n系统代理：") + info.ProxyNote
                 + "\n统计的是物理网卡（含代理加密开销），不是隧道网卡的字节数。";
         }
 
@@ -384,21 +399,30 @@ namespace task_monitor
                 tip += "\n" + info.GeoLabel;
             if (recent)
                 tip += "\n出口 IP 已变化：原 " + info.PublicIpPrev + " → 现 " + info.PublicIp;
-            PublicIpButton.ToolTip = string.IsNullOrEmpty(info.PublicIp) ? null : tip;
+            string pubTip = string.IsNullOrEmpty(info.PublicIp) ? null : tip;
+            if (!string.Equals(PublicIpButton.ToolTip as string, pubTip, StringComparison.Ordinal))
+                PublicIpButton.ToolTip = pubTip;   // 同样：内容没变就别重设，否则提示框每秒被重开
         }
 
         // 与 XAML 里绑定的那个前景色保持一致（正常态）。
         private Brush GetIpNormalBrush()
             => (Brush)PublicIpButton.GetValue(TextElement.ForegroundProperty);
 
-        private void SetIpButton(ContentControl btn, string value, bool echoAddress = false)
+        private void SetIpButton(ContentControl btn, string value, bool echoAddress = false, string note = null)
         {
             bool has = !string.IsNullOrEmpty(value);
             btn.Tag = has ? value : null;
             if (!ReferenceEquals(_copiedButton, btn) && btn.Content is TextBlock tb)
                 tb.Text = has ? IpDisplayText(btn, value) : "—";
             btn.IsEnabled = has;
-            btn.ToolTip = has ? (echoAddress && !IsMasked(btn) ? "复制\n" + value : "复制") : null;
+            // **内容没变就不要重新赋值**（2026-11-16）：本方法每 1 秒被调用一次，而每次都新建
+            // 一个内容相同的字符串 → WPF 认为属性变了 → 关掉提示框再重开。用户看到的是
+            // 「公网 IPv6 那个怎么悬停都不出」（刚弹出就被下一拍关掉），
+            // 以及「前两个会留一个浮着的『复制 182.x.x.x』残影」（被中断的提示框没销毁干净）。
+            string tip = has ? (echoAddress && !IsMasked(btn) ? "复制\n" + value : "复制") : null;
+            if (tip != null && !string.IsNullOrEmpty(note)) tip += "\n" + note;
+            if (!string.Equals(btn.ToolTip as string, tip, StringComparison.Ordinal))
+                btn.ToolTip = tip;
         }
 
         // The eye toggle masks the two PUBLIC IP buttons only (本机 stays visible).

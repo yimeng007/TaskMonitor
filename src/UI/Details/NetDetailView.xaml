@@ -61,6 +61,15 @@
             </ikw:SimpleStackPanel>
         </Grid>
 
+        <!-- 换节点后的即时提示：**放在头部下方独立一行**（原来塞在眼睛/刷新按钮那一排，
+             会和右侧的上传/下载数字挤在一起 —— 2026-11-17 反馈）。
+             只要经代理就显示：不按"档位"判断，因为节奏回到 15 秒档时它会消失、8 分钟后又冒出来，
+             看起来像闪烁（实测就是这样）。 -->
+        <TextBlock x:Name="RefreshHintText" Margin="0,-6,0,0"
+                   FontSize="11" Visibility="Collapsed"
+                   Foreground="{DynamicResource TextFillColorSecondaryBrush}"
+                   Text="换节点后如果 IP 没跟上，点右上角的刷新可立即重查" />
+
         <!-- Bidirectional throughput chart: ↑ upload grows up from the centerline (upper half),
              ↓ download mirrors down (lower half). Two colors, each half auto-scaled to its own
              peak (annotated at the top/bottom edge). 60s history. -->
@@ -183,7 +192,7 @@
                     <ColumnDefinition Width="Auto" />
                     <ColumnDefinition Width="*" />
                 </Grid.ColumnDefinitions>
-                <TextBlock Grid.Column="0" Text="公网 IPv6：" FontSize="12" VerticalAlignment="Center"
+                <TextBlock x:Name="PublicIpV6Label" Grid.Column="0" Text="公网 IPv6：" FontSize="12" VerticalAlignment="Center"
                            Foreground="{DynamicResource TextFillColorSecondaryBrush}" />
                 <ui:HyperlinkButton x:Name="PublicIpV6Button" Grid.Column="1" FontSize="12" Padding="0"
                                     HorizontalAlignment="Left" VerticalAlignment="Center"

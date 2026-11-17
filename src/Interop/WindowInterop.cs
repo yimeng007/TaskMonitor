@@ -224,6 +224,14 @@ namespace task_monitor
         [DllImport("user32.dll")]
         public static extern IntPtr WindowFromPoint(POINT point);
 
+        /// <summary>
+        /// 让指定窗口的某块区域重画。跨进程也有效（只是往对方队列里投一次 WM_PAINT）。
+        /// 用途：右键菜单打开瞬间，点击处可能残留一个 1px 的强调色边框残影（Win10 虚拟机
+        /// 尤其明显，DWM 未及时重绘那块），菜单弹出后请任务栏重画这一小块即可抹掉。
+        /// </summary>
+        [DllImport("user32.dll")]
+        public static extern bool InvalidateRect(IntPtr hWnd, ref RECT lpRect, bool bErase);
+
         [DllImport("user32.dll", ExactSpelling = true)]
         public static extern bool ClientToScreen(IntPtr hWnd, ref POINT lpPoint);
 

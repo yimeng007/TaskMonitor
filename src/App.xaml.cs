@@ -120,9 +120,47 @@ namespace task_monitor
             // then raced the queued prewarm into a crash dialog).
             TaskbarWindow.ClearStaleShutdownSentinel();
 
+            // 最后一道网：任何忘了 await 的异步任务，其异常默认会在终结器线程重新抛出，
+            // 表现为「后台任务异常 → 程序遇到未处理的异常」弹框（2026-11-16 实测：
+            // TcpClient.EndConnect 的 NRE 就是这么冒出来的）。
+            // 这类异常对常驻监控程序不该致命 —— 标记为已观察，记录留痕但不崩。
+            System.Threading.Tasks.TaskScheduler.UnobservedTaskException += (s, ex) =>
+            {
+                Logger.Warn("未观察的任务异常（已忽略，避免进程崩溃）", ex.Exception);
+                ex.SetObserved();
+            };
+
             base.OnStartup(e);
 
             Logger.Info($"启动 — 版本 {VersionInfo.Current}，OS {Environment.OSVersion}，Win11+={TaskbarWindow.IsWin11OrLater}");
+
+            // 最低系统要求 = **Windows 10**。三层依赖叠加，Win7 / Win8 都过不了：
+            //   ① 覆盖层是 D3D11 → DXGI flip-model → D2D1 → **DirectComposition**（Win8.1 起）
+            //   ② 窗口带 WS_EX_NOREDIRECTIONBITMAP（Win8 起）
+            //   ③ 每帧按显示器 DPI 布局，用 **GetDpiForWindow / SetThreadDpiAwarenessContext**
+            //      （Win10 1607 起）—— 在 Win7 上这两条 P/Invoke 直接抛
+            //      EntryPointNotFoundException，不是「画不出来」而是「崩」
+            // 没有这道闸的预期：Win7 上要么崩、要么进程在跑但界面全空且毫无提示
+            // （2026-11-16 准备做 Win7 兼容性测试时补上）。
+            // 精确到 1607（build 14393）：GetDpiForWindow / SetThreadDpiAwarenessContext 都是那一版
+            // 才加入 user32 的，Win10 1507/1511 上同样会 EntryPointNotFoundException。
+            var osv = Environment.OSVersion.Version;
+            bool osTooOld = osv.Major < 10 || (osv.Major == 10 && osv.Build < 14393);
+            if (osTooOld)
+            {
+                Logger.Warn($"系统版本 {osv}（build {osv.Build}）低于最低要求 Windows 10 1607（build 14393），提示后退出");
+                System.Windows.MessageBox.Show(
+                    "TaskMonitor 需要 Windows 10 或更高版本。\n\n"
+                    + "任务栏 / 悬浮窗的显示依赖三项系统能力：\n"
+                    + "· DirectComposition 合成（Windows 8.1 起）\n"
+                    + "· 无重定向位图窗口（Windows 8 起）\n"
+                    + "· 按显示器取 DPI 的接口（Windows 10 1607 起）\n\n"
+                    + "在 Windows 7 / 8 / 8.1，以及 Windows 10 早期版本（1607 之前）上会崩溃或界面全空，故不再支持。",
+                    "TaskMonitor", System.Windows.MessageBoxButton.OK,
+                    System.Windows.MessageBoxImage.Warning);
+                Shutdown();
+                return;
+            }
 
             // 开机自启动的任务里记着「注册那一刻的 exe 路径」：换过位置（重新解压 / 换目录 /
             // 从单文件版换文件夹版）之后任务还在、设置页仍显示「开」，但每次登录都在启动一个
@@ -422,10 +460,29 @@ namespace task_monitor
             }
             else
             {
-                Logger.Info("首次启动引导已跳过——使用默认显示方式");
+                // **跳过 = 只用默认值，不替用户做选择**（2026-11-16 修两处）：
+                //
+                // ① 位置：以前跳过什么都不写，配置里就缺 OverlayAnchor，读的时候回退成
+                //    「0 = 最左端」—— 而那正是向导刻意不给用户选的位置（左对齐任务栏的左端
+                //    被开始按钮和图标占满，实测覆盖层会挤在开始按钮右边）。
+                //    现在按向导自己的规则补上默认值：靠左 / 竖排任务栏 → 2（贴近系统托盘）；
+                //    居中任务栏的左端是真空位，保持最左端（不写 = 0）。
+                // 靠左 / 竖排：默认放到托盘一侧（左端被开始按钮和图标占满，站不住）。
+                // 居中任务栏：左端是真空位，保持"最左端"= 不写 OverlayAnchor。
+                // 两种情形都要清掉旧的布尔偏好 —— 否则旧配置里的 overlaySnapToStart=true
+                // 会让 AnchorIndexOf 回退成 1（贴近开始按钮），与「居中=最左端」的意图不符。
+                _config.OverlayAnchor = (taskbarVertical || !taskbarCentered) ? 2 : (int?)null;
+                _config.OverlayOnLeft = null;
+                _config.OverlaySnapToStart = null;
+                Logger.Info("首次启动引导已跳过——位置用默认值"
+                          + (taskbarVertical || !taskbarCentered ? "（任务栏·贴近系统托盘）" : "（任务栏·最左端）"));
             }
-            // 向导里的「开机自启动」勾选：只在和当前真实状态不同时才动手（避免多余的 schtasks 调用）。
-            if (StartupTask.IsEnabledForCurrentExe() != guide.AutoStartChosen)
+            // 向导里的「开机自启动」勾选：**只在用户点了完成时应用**。
+            // 跳过（DialogResult=false）表示「别替我决定」，此时保持原状 ——
+            // 以前这段在 if/else 之外，跳过了也会按默认勾选把自启打开，与「跳过=保持原样」的
+            // 约定不符（2026-11-16 用户反馈）。
+            if (guide.DialogResult == true
+                && StartupTask.IsEnabledForCurrentExe() != guide.AutoStartChosen)
             {
                 bool ok = StartupTask.SetEnabled(guide.AutoStartChosen);
                 Logger.Info($"首次启动引导：开机自启动 = {guide.AutoStartChosen}（{(ok ? "已应用" : "应用失败，保持原状")}）");
@@ -808,8 +865,54 @@ namespace task_monitor
                     _menuHost.UpdateLayout();
                 }
             }
+            // 打开前先把菜单量到最终尺寸：WPF 的 Popup 如果没有预先 Arrange，会先以极小尺寸
+            // 创建窗口再撑开，VM 下就可能留下那一帧的边框残影。
+            try
+            {
+                _taskbarMenu.Measure(new System.Windows.Size(double.PositiveInfinity, double.PositiveInfinity));
+                var want = _taskbarMenu.DesiredSize;
+                if (want.Width > 0 && want.Height > 0)
+                    _taskbarMenu.Arrange(new System.Windows.Rect(0, 0, want.Width, want.Height));
+            }
+            catch { /* 量不出来就按原样弹，不影响功能 */ }
+
             _menuHost.Activate();            // make it the active window so deactivation closes the menu
             _taskbarMenu.IsOpen = true;      // Placement=MousePoint → opens at the cursor
+
+            // 菜单弹出后把 1×1 宿主挪回屏幕外：它刚才为了「按光标 DPI 定位」被放到了鼠标点上，
+            // 而它又是**当前活动窗口** —— Windows 会给活动窗口描一圈强调色边框，于是在点击处
+            // 留下一个 1px 的小蓝方块（2026-11-16 Win10 虚拟机实测：跟着点击位置走、
+            // 颜色是系统蓝、菜单一关就消失）。
+            // SWP_NOACTIVATE 保证移动不会改变激活状态，"点别处关闭菜单"的逻辑不受影响。
+            Dispatcher.BeginInvoke(new Action(() =>
+            {
+                try
+                {
+                    var hwnd2 = new WindowInteropHelper(_menuHost).Handle;
+                    if (hwnd2 != IntPtr.Zero)
+                        WindowInterop.SetWindowPos(hwnd2, IntPtr.Zero, -10000, -10000, 0, 0,
+                            WindowInterop.SWP_NOSIZE | WindowInterop.SWP_NOZORDER
+                            | WindowInterop.SWP_NOACTIVATE);
+
+                    // 还有一层：菜单弹窗自己在「光标处」创建过初始窗口，VM 里 DWM 来不及重绘，
+                    // 那块会留下一个 1px 强调色边框残影（形如小蓝方块，跟着点击位置走）。
+                    // 请点击处的窗口（任务栏 / 我们自己的覆盖层）把那一小块重画一次即可清除。
+                    if (WindowInterop.GetCursorPos(out var pt))
+                    {
+                        var target = WindowInterop.WindowFromPoint(pt);
+                        if (target != IntPtr.Zero)
+                        {
+                            var r = new WindowInterop.RECT
+                            {
+                                left = pt.x - 16, top = pt.y - 16,
+                                right = pt.x + 16, bottom = pt.y + 16,
+                            };
+                            WindowInterop.InvalidateRect(target, ref r, true);
+                        }
+                    }
+                }
+                catch { /* 退出中：宿主/任务栏已销毁，忽略 */ }
+            }), System.Windows.Threading.DispatcherPriority.Background);
         }
 
         private static bool SupportsSnapToStart(IReadOnlyList<TaskbarDisplayInfo> displays,
@@ -1529,7 +1632,23 @@ namespace task_monitor
             exit.SetResourceReference(FrameworkElement.StyleProperty, "DefaultMenuItemStyle");
             exit.Click += (s, e) => BeginShutdown();
 
-            _taskbarMenu = new ContextMenu();
+            _taskbarMenu = new ContextMenu
+            {
+                // 这三项是给「Win10 虚拟机里右键时点击处闪一下强调色小方块」用的（2026-11-16）：
+                // - HasDropShadow=false：WPF 默认会在弹窗四周留一圈透明边做阴影，VM 的 DWM
+                //   来不及重绘，那一圈会先被画成一条边框，看起来就是个小方块；
+                // - 打开前先 Measure（见 ShowTaskbarMenu），避免「先 1×1 再撑开」。
+                // ContextMenu 没有 PopupAnimation 属性（那是 WinUI 的），WPF 侧只关阴影即可。
+                HasDropShadow = false,
+            };
+
+            // **右键点菜单项不该等于「选中」**：WPF 的 MenuItem 左右键都会触发 Click，
+            // 用户在弹开的菜单上再右键一下，就会执行到那一项 —— 实测会直接「退出」
+            // （2026-11-16 反馈：右键弹菜单、再右键点，程序退出了，像是左右键不分）。
+            // Win32 原生菜单里右键不动作，这里对齐同样的行为：菜单层把右键吃掉，
+            // 不让它落到 MenuItem 上。左键点击、键盘操作、点外面关闭都不受影响。
+            _taskbarMenu.PreviewMouseRightButtonDown += (s, e) => e.Handled = true;
+            _taskbarMenu.PreviewMouseRightButtonUp += (s, e) => e.Handled = true;
             _taskbarMenu.SetResourceReference(FrameworkElement.StyleProperty, "DefaultContextMenuStyle");
             _taskbarMenu.Items.Add(_menuFloating);
             _taskbarMenu.Items.Add(_menuFloatingTopmost);

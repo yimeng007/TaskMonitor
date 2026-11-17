@@ -61,6 +61,10 @@ namespace task_monitor
         public const string DefaultAddress = "127.0.0.1:9090";
 
         private const int HttpTimeoutMs = 2500;
+
+        // 关闭时打断在飞的请求：/connections 的超时是 2.5 秒，而退出只等 1 秒，
+        // 不打断就会「ClashSampler 停止等待超时」、进程多留 1 秒（2026-11-16 VM 实测）。
+        private volatile System.Net.HttpWebRequest _reqInFlight;
         // A path whose rate fell to 0 stays published (at 0) for this long after its last
         // nonzero poll — a short grace window in the spirit of ProcessNetSampler's
         // RecentSeconds, so a momentarily-idle process doesn't flicker out of the list.
@@ -121,6 +125,7 @@ namespace task_monitor
         {
             _stopping = true;
             _pollWake.Set();
+            try { _reqInFlight?.Abort(); } catch { }   // 打断网络等待，线程立刻退出
             bool stopped = _pollThread.Join(1000);
             if (!stopped) Logger.Warn("ClashSampler 停止等待超时");
             else Logger.Debug("ClashSampler 已停止");
@@ -287,14 +292,20 @@ namespace task_monitor
         // One GET {address}/connections. Throws on any failure (the caller counts it) —
         // the endpoint is loopback, so a refusal is instant and the timeout only guards a
         // wedged core.
-        private static ConnectionsPayload Fetch(string address, string secret)
+        private ConnectionsPayload Fetch(string address, string secret)
         {
-            using (var resp = BuildRequest(address, "/connections", secret).GetResponse())
-            using (var stream = resp.GetResponseStream())
+            var req = BuildRequest(address, "/connections", secret);
+            _reqInFlight = req;
+            try
             {
-                var ser = new DataContractJsonSerializer(typeof(ConnectionsPayload));
-                return (ConnectionsPayload)ser.ReadObject(stream);
+                using (var resp = req.GetResponse())
+                using (var stream = resp.GetResponseStream())
+                {
+                    var ser = new DataContractJsonSerializer(typeof(ConnectionsPayload));
+                    return (ConnectionsPayload)ser.ReadObject(stream);
+                }
             }
+            finally { _reqInFlight = null; }
         }
 
         /// <summary>

@@ -15,7 +15,7 @@
          (see the "本分支相对原版的改动" section at the top of README.md). -->
     <!-- 末位 2 = **个人修改版**（官方版末位是 1）；前面的日期跟随构建日。
          2026-11-12 那次构建跨过了零点，所以从 2026.11.11.2 升到 2026.11.12.2。 -->
-    <Version>2026.11.16.2</Version>
+    <Version>2026.11.18.2</Version>
     <!-- The SDK stamps InformationalVersion with the commit hash unless this is off —
          关于页/更新检测需要纯净的 "1.0.0"。 -->
     <IncludeSourceRevisionInInformationalVersion>false</IncludeSourceRevisionInInformationalVersion>
@@ -32,6 +32,14 @@
     <ApplicationManifest>src\app.manifest</ApplicationManifest>
     <!-- exe icon: assets\logo.ico (multi-size frames rendered from assets\logo.svg). -->
     <ApplicationIcon>assets\logo.ico</ApplicationIcon>
+  </PropertyGroup>
+
+  <PropertyGroup Condition="'$(Configuration)' == 'Release'">
+    <!-- 2026-11-18：Release 不生成调试符号。exe 的调试目录会把 PDB 的**绝对路径**
+         写进二进制，等于把构建机的用户名与目录结构一起发出去（实测可读出本机路径）。
+         崩溃日志仍有托管堆栈（方法名），只是没有行号。 -->
+    <DebugType>none</DebugType>
+    <DebugSymbols>false</DebugSymbols>
   </PropertyGroup>
 
   <ItemGroup>

@@ -86,14 +86,17 @@ namespace task_monitor
             PlacementPage.Visibility = Visibility.Visible;
             BackButton.Visibility = Visibility.Visible;
             PrimaryButton.Content = "完成";
-            if (!_taskbarCentered && !_taskbarVertical)
+            // 靠左对齐的水平任务栏只有一张卡：要求用户点一下（否则下面那条提示永远不会被读到）。
+            // 但**只在「还没点过」时**这样处理 —— 以前每次进这一页都无条件清空，
+            // 用户点上一步再回来就得重新点一遍（2026-11-16 反馈的「前后逻辑」问题）。
+            if (!_taskbarCentered && !_taskbarVertical && TrayOnlyOption.IsChecked != true)
             {
-                // Nothing is chosen yet: make the user acknowledge the single option first,
-                // otherwise the hint below it never gets read. A side bar has nothing to pick,
-                // so 完成 stays live there.
-                TrayOnlyOption.IsChecked = false;
                 SwitchTaskbarHint.IsOpen = false;
                 PrimaryButton.IsEnabled = false;
+            }
+            else
+            {
+                PrimaryButton.IsEnabled = true;
             }
         }
 
