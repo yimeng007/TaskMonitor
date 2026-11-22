@@ -181,7 +181,19 @@
                             <ui:SettingsCard.HeaderIcon>
                                 <ui:FontIcon Icon="{x:Static ui:FluentSystemIcons.Rocket_20_Regular}" />
                             </ui:SettingsCard.HeaderIcon>
-                            <ui:ToggleSwitch x:Name="AutoStartSwitch" Toggled="AutoStartSwitch_Toggled" />
+                            <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" VerticalAlignment="Center">
+                                <!-- 常显：随时可手动重指。MinWidth 必须有 —— 否则右侧空间紧时会被压成「修复」两字。 -->
+                                <Button x:Name="AutoStartRepairButton"
+                                        Content="修复指向"
+                                        MinWidth="92"
+                                        Padding="12,5"
+                                        Margin="0,0,18,0"
+                                        HorizontalContentAlignment="Center"
+                                        ToolTip="把开机自启动重新指向当前正在运行的程序"
+                                        Click="AutoStartRepair_Click"
+                                        Style="{StaticResource ChromeButtonStyle}" />
+                                <ui:ToggleSwitch x:Name="AutoStartSwitch" Toggled="AutoStartSwitch_Toggled" />
+                            </StackPanel>
                         </ui:SettingsCard>
 
                         <ui:SettingsCard Header="采样间隔"
@@ -303,11 +315,13 @@
                                              VerticalAlignment="Top"
                                              Icon="{x:Static ui:FluentSystemIcons.Info_20_Regular}" />
                                 <StackPanel Grid.Column="1">
-                                    <TextBlock Text="当前任务栏是「左对齐」，这个开关暂时锁定了"
+                                    <TextBlock x:Name="AnchorLockedTitle"
+                                               Text="当前任务栏是「左对齐」，这个开关暂时锁定了"
                                                FontSize="13" FontWeight="SemiBold" TextWrapping="Wrap" />
-                                    <TextBlock FontSize="12" Margin="0,4,0,0" TextWrapping="Wrap"
+                                    <TextBlock x:Name="AnchorLockedBody"
+                                               FontSize="12" Margin="0,4,0,0" TextWrapping="Wrap"
                                                Foreground="{DynamicResource TextFillColorSecondaryBrush}"
-                                               Text="左端被开始按钮和任务图标占满，没有空位可放，所以任务栏窗口停靠在通知区域左侧。要恢复选择：设置 → 个性化 → 任务栏 → 任务栏对齐方式，改成「居中」；改完切回这里会自动解锁，点一下立即生效。" />
+                                               Text="任务栏左端被开始按钮和任务图标占满、没有空位，所以窗口暂时停在托盘图标左侧（屏幕右边）。要恢复选择：设置 → 个性化 → 任务栏 → 任务栏对齐方式，改成「居中」；改完切回这里会自动解锁。" />
                                 </StackPanel>
                                 <Button Grid.Column="2" Margin="8,0,0,0" VerticalAlignment="Top"
                                         Style="{StaticResource ChromeButtonStyle}"
@@ -356,6 +370,25 @@
                                          Description="显示在任务栏靠开始按钮的一端（竖直任务栏为顶部）。"
                                          Visibility="Collapsed"
                                          Margin="0,0,0,4" />
+
+                        <!-- 2026-11-21：只在检测到 StartAllBack / ExplorerPatcher 时显示。
+                             作用：给用户一个"就地卸载"的入口——点按钮弹确认，再把它的卸载程序拉起来；
+                             **不做静默卸载**，卸载动作始终由用户在卸载程序里确认。
+                             没有该工具时整张卡折叠，不留痕迹。 -->
+                        <ui:SettingsCard x:Name="ThirdPartyUninstallCard"
+                                         Header="卸载 StartAllBack"
+                                         Description="检测到它在接管任务栏布局。点右侧按钮打开它的卸载程序（不会静默卸载）；卸载并重启资源管理器后，任务栏位置选项会自动恢复。"
+                                         Visibility="Collapsed"
+                                         Margin="0,0,0,4">
+                            <ui:SettingsCard.HeaderIcon>
+                                <ui:FontIcon Icon="{x:Static ui:FluentSystemIcons.Delete_20_Regular}" />
+                            </ui:SettingsCard.HeaderIcon>
+                            <Button x:Name="ThirdPartyUninstallButton"
+                                    Content="打开卸载程序"
+                                    Click="ThirdPartyUninstall_Click"
+                                    Margin="0,0,2,0"
+                                    Style="{StaticResource ChromeButtonStyle}" />
+                        </ui:SettingsCard>
 
                         <ui:SettingsExpander x:Name="DisplayExpander" Header="任务栏显示器"
                                              IsExpanded="True"
@@ -994,7 +1027,7 @@
                                 </Button>
                             </StackPanel>
 
-                            <TextBlock Text="Copyright © 2026 双霖（LineSoft）" FontSize="12"
+                            <TextBlock Text="Copyright © 2026 双霖（ExampleSSID）" FontSize="12"
                                        HorizontalAlignment="Center" Margin="0,28,0,0"
                                        Foreground="{DynamicResource TextFillColorTertiaryBrush}" />
 

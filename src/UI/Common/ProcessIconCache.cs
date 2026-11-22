@@ -21,6 +21,18 @@ namespace task_monitor
         // Icon.ExtractAssociatedIcon is capped at (that one reads blurry on high-DPI).
         private const int IconPixelSize = 48;
 
+        /// <summary>
+        /// 全程序共享的一份缓存（2026-11-21）。原注释写的就是 "shared by the five detail views"，
+        /// 但五个视图各自 new 了一份 —— 同一个 exe 的 48px 图标被解析并常驻 5 次。
+        /// 改成静态共享后再用 Shared，内存能省下几 MB，且壳层调用只发生一次。
+        /// </summary>
+        internal static readonly ProcessIconCache Shared = new ProcessIconCache();
+
+        // 上限：每个条目是一张 48px 的冻结位图。进程路径只增不减（装新软件、解压临时程序），
+        // 不设上限就会随使用时长一直涨。满了整表清空再按需重解析 —— 代价是下一次弹窗
+        // 多几次壳调用，换来内存不会无界增长。
+        private const int MaxEntries = 512;
+
         private readonly Dictionary<string, ImageSource> _byPath =
             new Dictionary<string, ImageSource>(StringComparer.OrdinalIgnoreCase);
         private ImageSource _defaultIcon;
@@ -32,6 +44,8 @@ namespace task_monitor
         {
             if (string.IsNullOrEmpty(exePath)) return DefaultIcon;
             if (_byPath.TryGetValue(exePath, out ImageSource cached)) return cached;
+
+            if (_byPath.Count >= MaxEntries) _byPath.Clear();
 
             ImageSource src = TryExtract(exePath) ?? DefaultIcon;
             _byPath[exePath] = src;

@@ -17,7 +17,9 @@ namespace task_monitor
         private const int MaxSampleIntervalMs = 10000;
         private const int InitialRebuildDelayMs = 1000;
         private const int MaxRebuildDelayMs = 30000;
-        private const int StopJoinMs = 1000;
+        // 退出时等采样线程收尾的上限。1000ms → 250ms：线程末尾自己会清 SRUM，
+        // 等满一秒只是把退出拖长（2026-11-21 与 18.2 的"快速关闭"口径对齐）。
+        private const int StopJoinMs = 250;
 
         private readonly object _lifecycleSync = new object();
         private readonly object _samplerSync = new object();

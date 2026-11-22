@@ -53,13 +53,25 @@ namespace task_monitor
         /// user chose 退出 on a non-fatal report; fatal reports and dropped duplicates
         /// always return true. Never throws — it runs inside exception handlers.
         /// </summary>
+        /// <summary>同一来源的崩溃弹窗最短间隔（60 秒）。逐拍异常不至于把屏幕刷满对话框。</summary>
+        private const int ReshowSuppressMs = 60000;
+        private static string _lastSource;
+        private static int _lastShowTick;
+
         public static bool Report(string source, Exception ex, bool fatal, bool block)
         {
             int n = Interlocked.Increment(ref _reported);
-            // The file log gets EVERY report first — including duplicates the dialog below
-            // would drop — so the stack survives even when nobody reads the dialog.
-            Logger.Error($"崩溃报告 #{n}（{source}，fatal={fatal}）", ex);
-            if (Interlocked.CompareExchange(ref _open, 1, 0) != 0) return true;  // one at a time
+
+            // 同一来源 60 秒内只弹一次 —— 逐拍抛出的异常否则会变成每拍一个框（上游 #5 的"关不掉"）。
+            // 日志每条照写（含被抑制的），堆栈永远留得住。
+            bool suppressed = !fatal && source == _lastSource
+                              && unchecked(Environment.TickCount - _lastShowTick) < ReshowSuppressMs;
+            Logger.Error($"崩溃报告 #{n}（{source}，fatal={fatal}{(suppressed ? "，60 秒内重复只记日志" : "")}）", ex);
+            if (suppressed) return true;
+
+            if (Interlocked.CompareExchange(ref _open, 1, 0) != 0) return true;   // 同一时刻只一个框
+            _lastSource = source;
+            _lastShowTick = Environment.TickCount;
             try
             {
                 var dispatcher = Application.Current?.Dispatcher;

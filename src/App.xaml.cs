@@ -37,6 +37,10 @@ namespace task_monitor
         // the transient flyout. All open windows get every snapshot push (one per tick).
         private readonly List<DetailWindow> _pinned = new List<DetailWindow>();
 
+        /// <summary>同时最多固定几个详情窗。每个固定窗常驻一整页 WPF 树（图表＋进程列表＋图标），
+        /// 3 个是"够对比、又不至于把内存推高"的折中；加上 1 个未固定的临时窗，屏上最多 4 个。</summary>
+        private const int MaxPinnedDetails = 3;
+
         private const string SingleInstanceMutexName = @"Global\TaskMonitor.exe__7f3a2c9e-4b1d-4e8a-9f2c-6a5b8c7d1e0a";
         private const string SecondInstanceEventName = SingleInstanceMutexName + ".AlreadyRunning";
 
@@ -214,9 +218,7 @@ namespace task_monitor
                 // never throws (it is a pure optimization).
                 if (_stopping) return;
                 new DetailWindow(_sampling).Prewarm();
-                // Collect the throwaway shell and view trees, but keep the warmed JIT/BAML/style/
-                // render pages resident — see ScheduleIdleTrim / SystemInfo.TrimMemory.
-                SystemInfo.TrimMemory();
+                TrimMemorySoon("详情预热后");
             }), System.Windows.Threading.DispatcherPriority.Background);
 
             UpdateChecker.CheckOnce(_config, TrySaveConfig);
@@ -236,9 +238,26 @@ namespace task_monitor
             Dispatcher.BeginInvoke(DispatcherPriority.Background, new Action(Shutdown));
         }
 
+        /// <summary>退出时把还开着的窗口一次性关掉（不触发回收，进程马上就没了）。</summary>
+        private void CloseWindowsForExit()
+        {
+            try { _settings?.Close(); } catch { }
+            try { _detail?.Close(); } catch { }
+            foreach (var w in _pinned.ToArray()) { try { w.Close(); } catch { } }
+            _settings = null;
+            _detail = null;
+            _pinned.Clear();
+        }
+
         protected override void OnExit(ExitEventArgs e)
-        {            Logger.Info("退出");
+        {
+            var exitWatch = System.Diagnostics.Stopwatch.StartNew();
+            Logger.Info("退出");
             _stopping = true;
+
+            // 先把还开着的设置页 / 详情窗关掉：窗口晚于 taskbar 停机会在拆解阶段还挂着
+            // 渲染资源与 COM 引用，退出会明显变慢（18.2 的"快速关闭"就是靠这个顺序）。
+            try { CloseWindowsForExit(); } catch (Exception ex) { Logger.Debug("退出时关窗口失败：" + ex.Message); }
             // 先摘掉托盘图标：留着会在托盘里停一个点不动的死图标，直到用户划过它。
             _tray?.Dispose();
             _tray = null;
@@ -254,6 +273,9 @@ namespace task_monitor
                 _configSaveDebounce.Stop();
                 TrySaveConfig();
             }
+            // 停掉两个还会自己跑的定时器：看门狗（每 2 秒读已停对象）、更新重试（到点会写 config）。
+            _overlayWatch?.Stop();
+            UpdateChecker.Stop();
             _taskbars?.StopAll();
             TaskbarWindow.ReleaseNativeCallChannel();
             _sampling.Stop();
@@ -265,6 +287,7 @@ namespace task_monitor
             // nothing to release — just drop the handle. Done explicitly so the lifetime
             // is unambiguous; process death would close it regardless.
             _singleInstanceMutex?.Dispose();
+            Logger.Info($"退出完成：用时 {exitWatch.ElapsedMilliseconds}ms");
             base.OnExit(e);
         }
 
@@ -425,9 +448,57 @@ namespace task_monitor
             }
         }
 
-        private bool ShouldShowStartupGuide() =>
-            _config.StartupGuideCompleted == false ||
-            (_config.StartupGuideCompleted == null && _config.IsNewInstall);
+        /// <summary>
+        /// 把位置钉成「关 + 最左端」——第三方任务栏下的唯一安全位置。
+        /// 三个字段必须一起写：只写 OverlayOnLeft 时，旧的 OverlaySnapToStart 会让
+        /// AnchorIndexOf 回退到「贴近开始按钮」。
+        /// </summary>
+        private void ForceLeftAnchor()
+        {
+            _config.OverlayOnLeft = null;
+            _config.OverlayAnchor = 0;
+            _config.OverlaySnapToStart = null;
+        }
+
+        private bool ShouldShowStartupGuide()
+        {
+            // 有第三方任务栏工具时不弹引导（静默用默认值），只弹一次「检测到 X」；卸载后再补一次。
+            string thirdParty = DetectThirdPartyTaskbar();
+            if (thirdParty != null)
+            {
+                _config.ThirdPartyTaskbarSeen = true;
+
+                bool firstTime = _config.StartupGuideCompleted != true;
+                if (firstTime || _config.StartupGuideCompleted == null)
+                {
+                    // 静默走"完成"：位置用默认（最左端），不改开机自启，也不弹任何窗口。
+                    _config.StartupGuideCompleted = true;
+                    _config.StartupGuideSkippedForThirdParty = true;
+                    ForceLeftAnchor();
+                    TrySaveConfig();
+                    Logger.Info("检测到 " + thirdParty + "——已静默跳过首次引导（位置取默认最左端）");
+                }
+                return false;
+            }
+
+            // 已卸载且上次是被它顶掉的 → 补一次引导；老配置用「看到过 + 弹过提示」等价判断。
+            bool skippedByThirdParty =
+                _config.StartupGuideSkippedForThirdParty == true
+                || (_config.ThirdPartyTaskbarSeen == true && _config.ThirdPartyTaskbarHintShown == true);
+
+            if (skippedByThirdParty && _config.ThirdPartyTaskbarSeen == true)
+            {
+                _config.StartupGuideSkippedForThirdParty = null;
+                _config.ThirdPartyTaskbarSeen = null;
+                _config.StartupGuideCompleted = null;      // 回到"未完成"，下次进入桌面即弹
+                TrySaveConfig();
+                Logger.Info("第三方任务栏工具已卸载——恢复首次引导，本次启动会重新走一遍");
+                return true;
+            }
+
+            return _config.StartupGuideCompleted == false ||
+                   (_config.StartupGuideCompleted == null && _config.IsNewInstall);
+        }
 
         private void ShowStartupGuide()
         {
@@ -489,7 +560,10 @@ namespace task_monitor
             }
 
             _config.StartupGuideCompleted = true;
+            _config.StartupGuideSkippedForThirdParty = null;   // 用户自己走完，不再补第二次
             TrySaveConfig();
+
+            TrimMemorySoon("引导关闭后");   // 引导是 WPF 里最重的一屏，不回收会多留 50~100MB
         }
 
         private void StartTaskbar()
@@ -509,6 +583,10 @@ namespace task_monitor
                 Dispatcher.BeginInvoke(new Action(RefreshDetails));
                 MaybePersistNetUsage();
             };
+
+            // 第三方任务栏下界面会锁死位置开关；配置必须跟着钉死，否则界面显示"关"、
+            // 运行时仍按旧配置摆到别处。
+            if (DetectThirdPartyTaskbar() != null) ForceLeftAnchor();
 
             _taskbars.SetPlacement(_config.OverlayOnLeft != false, AnchorIndexOf(_config));
             _taskbars.SetCompactLayout(_config.CompactLayout == true);
@@ -547,7 +625,154 @@ namespace task_monitor
             _sampling.Start();
             _taskbars.Start(_config.FloatingMode == true, _config.TaskbarDisplays);
             StartTrayIcon();
+
+            // 第三方"重写任务栏"的工具（StartAllBack / ExplorerPatcher）会让任务栏嵌入不稳，
+            // 提示一次改用悬浮模式。**必须等托盘图标起来之后**再问，且走 Dispatcher 异步：
+            // 之前在启动中途同步弹 MessageBox，进程会卡在一个看不见的模态框里
+            // （2026-11-20 实测：日志停在"启动 — 版本"，覆盖层不出现，内存却占住）。
+            Dispatcher.BeginInvoke(new Action(OfferFloatingModeIfThirdPartyTaskbar),
+                System.Windows.Threading.DispatcherPriority.ApplicationIdle);
         }
+
+        /// <summary>
+        /// 检测 StartAllBack / ExplorerPatcher 这类"重写任务栏"的工具，提示一次改用悬浮模式。
+        /// 依据：它们接管了任务栏的坐标与窗口结构，本程序嵌入任务栏会与它们抢布局
+        /// （上游 issue #2；实测见 资料/03-技术资料/上游issue清查/#2-与StartAllBack不兼容.md）。
+        /// </summary>
+        private void OfferFloatingModeIfThirdPartyTaskbar()
+        {
+            if (_config.ThirdPartyTaskbarHintShown == true) return;
+            if (_config.FloatingMode == true) return;      // 已经在用悬浮模式，不必提示
+
+            string detected = DetectThirdPartyTaskbar();
+            if (detected == null) return;
+
+            _config.ThirdPartyTaskbarHintShown = true;     // 无论选什么都只提示一次
+            TrySaveConfig();                               // 立刻落盘：后面就算崩了也不会反复问
+            Logger.Info("检测到 " + detected + "——询问是否改用悬浮模式");
+
+            // 本程序没有主窗口，裸 MessageBox 会被盖住；用屏幕外的置顶 owner 把它顶到前台。
+            Window owner = null;
+            MessageBoxResult r = MessageBoxResult.No;
+            try
+            {
+                owner = new Window
+                {
+                    Width = 1, Height = 1, Left = -20000, Top = -20000,
+                    WindowStyle = WindowStyle.None,
+                    ShowInTaskbar = false,
+                    ShowActivated = true,
+                    Topmost = true,
+                };
+                owner.Show();
+                owner.Activate();
+                r = System.Windows.MessageBox.Show(owner,
+                    "检测到 " + detected + "。\n\n"
+                    + "它会接管任务栏的布局（包括左边的开始按钮和中间的图标区），"
+                    + "本程序嵌入任务栏时两边会互相抢位置。实测后果：任务栏图标被挤、"
+                    + "窗口一路右移出屏幕、任务栏位置开关一开就乱。\n\n"
+                    + "请选择：\n"
+                    + "【是】保持现状 —— 窗口固定在任务栏最左端，「贴近系统托盘」被禁用，"
+                    + "等于是安全模式（推荐，不影响你继续用 " + detected + "）。\n"
+                    + "【否】我要卸载 " + detected + " —— 卸载后任务栏回到系统原始状态，"
+                    + "位置选项全部恢复可用（会打开卸载程序，卸载与否你确认）。\n\n"
+                    + "之后可随时在 设置 → 显示与排列 里调整。",
+                    "TaskMonitor · 检测到第三方任务栏", MessageBoxButton.YesNo, MessageBoxImage.Warning);
+            }
+            catch (Exception ex) { Logger.Warn("悬浮模式提示框显示失败：" + ex.Message); }
+            finally { try { owner?.Close(); } catch { } }
+
+            if (r == MessageBoxResult.Yes)
+            {
+                _config.FloatingMode = false;
+                ForceLeftAnchor();
+                TrySaveConfig();
+                Logger.Info("检测到 " + detected + "——用户选择保持现状：窗口固定最左端，「贴近系统托盘」已禁用");
+            }
+            else
+            {
+                Logger.Info("检测到 " + detected + "——用户选择卸载，正在打开卸载程序");
+                TryOpenUninstaller(detected);
+            }
+        }
+
+        /// <summary>
+        /// 打开第三方任务栏工具的卸载程序（用户点了「我要卸载」时才调）。
+        /// 只负责把卸载界面拉起来，真正的卸载动作仍由用户确认——不做静默卸载。
+        /// </summary>
+        internal static bool TryOpenUninstaller(string detected)
+        {
+            try
+            {
+                string local = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
+                string pf = Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles);
+
+                string[] candidates = detected == "StartAllBack"
+                    ? new[]
+                      {
+                          Path.Combine(pf, "StartAllBack", "StartAllBackCfg.exe"),
+                          Path.Combine(local, "StartAllBack", "StartAllBackCfg.exe"),
+                      }
+                    : new[]
+                      {
+                          Path.Combine(local, "ExplorerPatcher", "ep_setup.exe"),
+                      };
+
+                foreach (string exe in candidates)
+                {
+                    if (!File.Exists(exe)) continue;
+                    Process.Start(new ProcessStartInfo(exe, "/uninstall") { UseShellExecute = true });
+                    Logger.Info("已打开卸载程序：" + exe);
+                    return true;
+                }
+
+                Logger.Warn("没找到 " + detected + " 的卸载程序，请到 控制面板 → 程序和功能 手动卸载");
+                return false;
+            }
+            catch (Exception ex)
+            {
+                Logger.Warn("打开卸载程序失败：" + ex.Message);
+                return false;
+            }
+        }
+
+        /// <summary>返回检测到的第三方任务栏工具名；没有则 null。只用可执行文件/注册表存在性判断，不注入、不枚举模块。</summary>
+        /// <summary>
+        /// 检测 StartAllBack / ExplorerPatcher（只看文件与注册表存在性，不注入、不枚举模块）。
+        /// 结果缓存 5 秒：设置页每秒断言一次、恢复/切换路径也会调，避免反复做 IO。
+        /// 卸载后最多 5 秒才反映为"已卸载"，对用户无感。
+        /// </summary>
+        internal static string DetectThirdPartyTaskbar()
+        {
+            long now = DateTime.UtcNow.Ticks / TimeSpan.TicksPerMillisecond;   // .NET Framework 4.8 没有 TickCount64
+            if (now - _thirdPartyProbeTick < 5000) return _thirdPartyProbe;
+
+            string found = null;
+            try
+            {
+                string local = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
+                string pf = Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles);
+
+                if (File.Exists(Path.Combine(local, "StartAllBack", "StartAllBackCfg.exe"))
+                    || File.Exists(Path.Combine(pf, "StartAllBack", "StartAllBackCfg.exe")))
+                    found = "StartAllBack";
+                else if (Directory.Exists(Path.Combine(local, "ExplorerPatcher")))
+                    found = "ExplorerPatcher";
+                else
+                {
+                    using (var k = Microsoft.Win32.Registry.CurrentUser.OpenSubKey(@"Software\StartIsBack"))
+                        if (k != null) found = "StartAllBack";
+                }
+            }
+            catch { /* 探测失败就当没装 */ }
+
+            _thirdPartyProbe = found;
+            _thirdPartyProbeTick = now;
+            return found;
+        }
+
+        private static string _thirdPartyProbe;
+        private static long _thirdPartyProbeTick = -100000;
 
         // ---------- 托盘图标 ----------
         // 存在的理由：取消置顶后点「显示桌面」，悬浮窗会被桌面盖住，而那之后没有入口能把它
@@ -630,7 +855,21 @@ namespace task_monitor
             if (pinned)
             {
                 if (ReferenceEquals(_detail, w)) _detail = null;
+
                 if (!_pinned.Contains(w)) _pinned.Add(w);
+
+                // 固定窗上限 3 个（每个都是整页 WPF 树：图表 + 进程列表 + 图标缓存），
+                // 超出时按"最早固定"的顺序关掉最旧的那个。加上 1 个未固定的临时窗，
+                // 屏幕上最多同时 4 个详情窗。
+                while (_pinned.Count > MaxPinnedDetails)
+                {
+                    var oldest = _pinned[0];
+                    if (ReferenceEquals(oldest, w)) break;      // 新固定的自己不动
+                    _pinned.RemoveAt(0);
+                    Logger.Info($"固定窗超过 {MaxPinnedDetails} 个——自动关闭最早的那个");
+                    try { oldest.Close(); } catch { }
+                }
+
                 _taskbars.SetColumnClickEnabled(w.Column, false);
             }
             else
@@ -703,19 +942,25 @@ namespace task_monitor
             d?.Close();
         }
 
-        // A detail window closing leaves its whole UI tree (BAML-built controls, charts,
-        // acrylic resources) resident until a GC happens to run — which, for a process
-        // that then sits idle, may be never. Collect once the LAST window is gone. The check
-        // is deferred to Background priority: Closed fires synchronously mid-ToggleDetail
-        // (old window closes, new one hasn't been created yet), so checking inline would
-        // see a false "all closed" and run an unnecessary full GC before the replacement.
-        // Deferred, the toggle's new window already exists and the collection is skipped.
+        /// <summary>把一次内存回收排到 UI 空闲时执行（异步；30 秒节流在 SystemInfo 里）。</summary>
+        private void TrimMemorySoon(string reason)
+        {
+            if (_stopping) return;        // 退出中排回收没有意义，且可能在 dispatcher 关闭后投递
+            Dispatcher.BeginInvoke(new Action(() => SystemInfo.TrimMemory(reason)),
+                System.Windows.Threading.DispatcherPriority.Background);
+        }
+
+        /// <summary>
+        /// 最后一个 WPF 窗口关闭后回收一次 —— 否则那棵 UI 树（控件、图表、亚克力资源）
+        /// 会一直挂在内存里等下一次 GC，而进程闲着时可能永远等不到。
+        /// 延到 Background：Closed 是在 ToggleDetail 中途同步触发的，当场检查会误判"全关"。
+        /// </summary>
         private void ScheduleIdleTrim()
         {
             Dispatcher.BeginInvoke(new Action(() =>
             {
                 if (_detail != null || _pinned.Count != 0 || _settings != null) return;
-                SystemInfo.TrimMemory();
+                SystemInfo.TrimMemory("窗口全关");
             }), System.Windows.Threading.DispatcherPriority.Background);
         }
 
@@ -1023,6 +1268,14 @@ namespace task_monitor
         // and stay where they are).
         private void OnOverlayPlacementChanged(bool onLeft, int anchor)
         {
+            // 第三方任务栏下「贴近系统托盘」不可用：即使配置/旧版本把 anchor=2 带进来，也强制归 0。
+            if (anchor == 2 && DetectThirdPartyTaskbar() != null)
+            {
+                anchor = 0;
+                Logger.WarnOnce("anchor-right-blocked",
+                    "第三方任务栏环境下「贴近系统托盘」不可用（会与它抢布局）——已强制改为最左端；"
+                    + "需要自由摆放请改用悬浮模式");
+            }
             _config.OverlayOnLeft = onLeft;
             _config.OverlayAnchor = anchor == 0 ? (int?)null : anchor;
             // 给首次启动向导做镜像：那边仍然用布尔值表达（是不是开始按钮旁）。

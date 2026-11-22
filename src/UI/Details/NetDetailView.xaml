@@ -80,7 +80,7 @@
         <!-- Connection info band (NetInfoSampler — refreshed ~1 Hz on its own background
              thread, pushed in via the per-second snapshot). Every datum is its own labeled
              cell (标签：值 — secondary label + primary value, like the CPU footer):
-             row 0 = 连接 type with the SSID in parens ("WLAN (LineSoft-Main-2)") | 速率
+             row 0 = 连接 type with the SSID in parens ("WLAN (ExampleSSID)") | 速率
              link rate, row 1 = 标准 | 频段·channel width (Wi-Fi only cells), row 2 = local
              & public IPv4 as click-to-copy HyperlinkButtons (the header's eye toggle masks
              both public IPs with dots), row 3 = 公网 IPv6 (full-width,

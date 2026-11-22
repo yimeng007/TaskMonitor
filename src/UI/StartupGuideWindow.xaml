@@ -402,7 +402,7 @@
                                 </Canvas>
                             </Border>
                             <TextBlock Text="贴近系统托盘" Style="{StaticResource OptionTitleStyle}" />
-                            <TextBlock Text="显示在通知区域左侧，方便配合托盘图标查看。"
+                            <TextBlock Text="停在托盘图标左边，方便对照托盘查看。"
                                        Style="{StaticResource OptionDescriptionStyle}" />
                         </StackPanel>
                     </RadioButton>
@@ -417,7 +417,7 @@
                     <TextBlock Text="当前任务栏是「左对齐」"
                                Style="{DynamicResource TitleTextBlockStyle}"
                                HorizontalAlignment="Center" />
-                    <TextBlock Text="任务栏左端被开始按钮和任务图标占满，没有空位，任务栏窗口会停靠在通知区域左侧。"
+                    <TextBlock Text="任务栏左端被开始按钮和任务图标占满，没有空位，窗口会停在托盘图标左边。"
                                Style="{DynamicResource BodyTextBlockStyle}"
                                Foreground="{DynamicResource TextFillColorSecondaryBrush}"
                                HorizontalAlignment="Center"

@@ -17,7 +17,7 @@ namespace task_monitor
         // tip state lives in the host so the per-second Refresh can update a shown value
         // without waiting for the mouse to move (what re-fires MouseMove).
         private readonly ChartTipHost _tip = new ChartTipHost();
-        private readonly ProcessIconCache _icons = new ProcessIconCache();
+        private readonly ProcessIconCache _icons = ProcessIconCache.Shared;
 
         // Hovered composition-bar segment, so the per-second Refresh can update the open
         // tooltip's value without waiting for the mouse to move.

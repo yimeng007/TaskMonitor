@@ -55,6 +55,25 @@ namespace task_monitor
         /// </summary>
         public bool? StartupGuideCompleted { get; set; }
 
+        /// <summary>
+        /// 是否已经提示过「检测到 StartAllBack 这类重写任务栏的工具，建议改用悬浮模式」。
+        /// 只提示一次（无论用户选是还是否），避免每次启动都弹。
+        /// </summary>
+        public bool? ThirdPartyTaskbarHintShown { get; set; }
+
+        /// <summary>
+        /// 曾经检测到第三方任务栏工具（StartAllBack / ExplorerPatcher）。
+        /// 用途：它消失后再出现「已卸载」这一转变时，重新放一次引导教程。
+        /// </summary>
+        public bool? ThirdPartyTaskbarSeen { get; set; }
+
+        /// <summary>
+        /// 本次引导是因为"检测到第三方任务栏"而被静默跳过的。
+        /// 只有这个标记为真时，卸载第三方工具后才会自动补一次引导；
+        /// 用户自己走完引导（该字段为空）不会被再次打扰。
+        /// </summary>
+        public bool? StartupGuideSkippedForThirdParty { get; set; }
+
         /// <summary>本次启动时 settings.yaml 不存在（或为空）；仅用于首次启动判定，不写入配置文件。</summary>
         [YamlIgnore]
         public bool IsNewInstall { get; private set; }

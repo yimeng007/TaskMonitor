@@ -223,6 +223,11 @@ namespace task_monitor
         private string _publicIpV6;         // same, IPv6
         private long _publicIpNextTryMs;    // Stopwatch-ms timestamp of the next allowed lookup
 
+        // 用户点刷新后的「急促档」截止：这段时间内公网 IP 每秒重查。
+        // 没有它时，点完刷新若恰好赶上刚查过，要等整个 cadence（代理下最长 60s）才见新 IP
+        // ——2026-11-23 实测最坏一次等了 15 秒。
+        private long _burstUntilMs;
+
         // ---- on-demand Wi-Fi details (location-sensitive; queried only when a panel opens) ----
         // Poll-thread-private cache; no synchronization — the UI thread sees results only via the
         // _latest NetInfo copy. Keyed by adapter Id, NOT SSID: SSID itself needs wlanapi to read,
@@ -255,7 +260,8 @@ namespace task_monitor
             _publicIpNextTryMs = 0;     // 让 nowMs >= _publicIpNextTryMs 成立 → 下一拍就查
             _geoFetchedAtMs = 0;        // 地区缓存一起作废，IP 没变也会重取
             _proxyStreak = 0;           // 用户正在盯着看：回到最紧的 15s 档（不然可能还是 60s）
-            Logger.Debug("用户点击刷新——公网 IP 与地区缓存已作废，下一拍重查");
+            _burstUntilMs = (Stopwatch.GetTimestamp() * 1000 / Stopwatch.Frequency) + 10_000;
+            Logger.Debug("用户点击刷新——公网 IP 与地区缓存已作废，接下来 10 秒每秒重查");
         }
 
         /// <summary>The adapter to inspect (NetSampler's current selection), or null.</summary>
@@ -463,6 +469,8 @@ namespace task_monitor
                                 : _proxyStreak <= ProxyMidStreak ? ProxyRefreshMidMs
                                 : ProxyRefreshSlowMs;
                     }
+                    // 用户刚点过刷新：10 秒内无视阶梯，每秒重查（最多多打 10 个请求）
+                    if (nowMs < _burstUntilMs && cadence > 1000) cadence = 1000;
                     _publicIpNextTryMs = nowMs + cadence;
                 }
                 else
@@ -853,11 +861,40 @@ namespace task_monitor
         //           ip.cn（302 跳转）、ip.sb（全英文）。
         private string FetchGeo(string ip)
         {
-            string label = FetchGeoPconline(ip);
-            if (!string.IsNullOrEmpty(label)) return label;
-            label = FetchGeoCipCc(ip);
-            if (!string.IsNullOrEmpty(label)) return label;
-            return FetchGeoIpWhoIs(ip);
+            // 顺序按是否经代理切换（2026-11-23 实测）：
+            //   直连 pconline 0.24~0.35s、cip.cc 0.15~0.85s、ipwho.is 0.70~1.44s
+            //   代理 pconline 1.08~4.68s、cip.cc 0.51~0.56s、ipwho.is 0.49~0.50s
+            // 国内站点过代理要绕去国外再回来，所以代理下先问 cip.cc / ipwho.is。
+            bool viaProxy = !string.IsNullOrEmpty(_lastProxyNote);
+
+            string[] order = viaProxy
+                ? new[] { "cip", "ipwho", "pconline" }
+                : new[] { "pconline", "cip", "ipwho" };
+
+            string best = null;
+            foreach (string src in order)
+            {
+                string label = src == "pconline" ? FetchGeoPconline(ip)
+                             : src == "cip" ? FetchGeoCipCc(ip)
+                             : FetchGeoIpWhoIs(ip);
+                if (string.IsNullOrEmpty(label)) continue;
+
+                // 「美国 加利福尼亚州 · Vultr」这种才算完整（地点有省/州 + 有运营商）。
+                if (IsGeoLabelRich(label)) return label;
+
+                // 只拿到「俄罗斯」这种残缺值时先记下，继续问下一家 —— 有的源对某些国家
+                // 只给国名，换一家往往能补齐省与注册主体（2026-11-23 实测）。
+                if (best == null) best = label;
+            }
+            return best;
+        }
+
+        /// <summary>标签是否足够完整：地点段含空格（国名+省/州）且带「 · 运营商」。</summary>
+        private static bool IsGeoLabelRich(string label)
+        {
+            int dot = label.IndexOf(" · ", StringComparison.Ordinal);
+            if (dot <= 0) return false;
+            return label.Substring(0, dot).IndexOf(' ') > 0;
         }
 
         /// <summary>
@@ -940,8 +977,16 @@ namespace task_monitor
         {
             if (string.IsNullOrEmpty(place)) return null;
             string p = place.Trim();
-            if (p.StartsWith("中国 ", StringComparison.Ordinal)) p = p.Substring(3);
-            else if (p.Equals("中国", StringComparison.Ordinal)) p = "";
+            // 港澳台必须保留「中国」前缀（中国 台湾 / 中国 香港 / 中国 澳门）；
+            // 其余国内省份去掉国名（「中国 山东」→「山东」），国外则原样带国名。
+            bool sarOrTw = p.StartsWith("中国 台湾", StringComparison.Ordinal)
+                        || p.StartsWith("中国 香港", StringComparison.Ordinal)
+                        || p.StartsWith("中国 澳门", StringComparison.Ordinal);
+            if (!sarOrTw)
+            {
+                if (p.StartsWith("中国 ", StringComparison.Ordinal)) p = p.Substring(3);
+                else if (p.Equals("中国", StringComparison.Ordinal)) p = "";
+            }
             if (p.Length == 0) p = place.Trim();
             return string.IsNullOrEmpty(isp) ? p : p + " · " + isp;
         }
@@ -965,12 +1010,50 @@ namespace task_monitor
 
                 string country = JsonValue(body, "country");
                 string region = JsonValue(body, "region");
+                  // ipwho.is 的 zh-CN 是繁体（山東省 / 濟南），先转简体
+                  region = ToSimplified(region);
                 string place = ((country ?? "") + (string.IsNullOrEmpty(region) ? "" : " " + region)).Trim();
                 if (place.Length == 0) return null;
-                return place;
+                  // 顺手补运营商：isp 是英文（CHINANET / CHINA UNICOM…），映射成中文
+                  string isp = MapIsp(JsonValue(body, "isp") ?? JsonValue(body, "org"));
+                  return ComposeGeoLabel(place, isp);
             }
             catch { return null; }
             finally { _reqGeoInFlight = null; }
+        }
+
+        // ipwho.is 的 zh-CN 输出是繁体；只覆盖省级与少数高频城市（穷举无意义）。
+        private static readonly string[,] TraditionalToSimplified =
+        {
+            { "山東", "山东" }, { "廣東", "广东" }, { "江蘇", "江苏" }, { "陝西", "陕西" },
+            { "遼寧", "辽宁" }, { "黑龍江", "黑龙江" }, { "內蒙古", "内蒙古" }, { "廣西", "广西" },
+            { "貴州", "贵州" }, { "雲南", "云南" }, { "甘肅", "甘肃" }, { "寧夏", "宁夏" },
+            { "重慶", "重庆" }, { "台灣", "台湾" }, { "澳門", "澳门" },
+            { "濟南", "济南" }, { "青島", "青岛" }, { "鄭州", "郑州" }, { "長沙", "长沙" },
+            { "武漢", "武汉" }, { "廈門", "厦门" }, { "貴陽", "贵阳" }, { "蘭州", "兰州" },
+        };
+
+        private static string ToSimplified(string s)
+        {
+            if (string.IsNullOrEmpty(s)) return s;
+            for (int i = 0; i < TraditionalToSimplified.GetLength(0); i++)
+                if (s.IndexOf(TraditionalToSimplified[i, 0], StringComparison.Ordinal) >= 0)
+                    s = s.Replace(TraditionalToSimplified[i, 0], TraditionalToSimplified[i, 1]);
+            return s;
+        }
+
+        // 英文运营商 → 中文（只做高频词，未命中保留原文）。
+        private static string MapIsp(string raw)
+        {
+            if (string.IsNullOrWhiteSpace(raw)) return null;
+            string u = raw.ToUpperInvariant();
+            if (u.Contains("CHINANET") || u.Contains("CHINA TELECOM")) return "电信";
+            if (u.Contains("UNICOM")) return "联通";
+            if (u.Contains("CHINA MOBILE") || u.Contains("CMNET")) return "移动";
+            if (u.Contains("CERNET")) return "教育网";
+            if (u.Contains("BROADNET")) return "宽带通";
+            if (u.Contains("ALIBABA") || u.Contains("TENCENT") || u.Contains("HUAWEI CLOUD")) return "云厂商";
+            return raw.Trim();
         }
 
         /// <summary>从极简 JSON 里取一个字符串字段（不引 JSON 库，够用即可）。</summary>
@@ -1013,7 +1096,8 @@ namespace task_monitor
                 if (string.IsNullOrWhiteSpace(addr)) return null;
                 addr = addr.Trim();
                 isp = isp == null ? null : isp.Trim();
-                return string.IsNullOrWhiteSpace(isp) ? addr : addr + " · " + isp;
+                // 与其他源共用同一套「国名策略」，避免同一 IP 因源不同显示不一致
+                return ComposeGeoLabel(addr, string.IsNullOrWhiteSpace(isp) ? null : isp);
             }
             catch { return null; }
             finally { _reqGeoInFlight = null; }

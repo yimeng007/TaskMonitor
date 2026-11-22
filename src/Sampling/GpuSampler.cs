@@ -498,8 +498,12 @@ namespace task_monitor
                 // released), etc. Zero the metrics; Sample() drops the adapter after a few
                 // strikes and the periodic re-enumeration picks it back up if it returns.
                 entry.Failures++;
+                // 只在消息里带 HRESULT，不贴堆栈：这是驱动重置/热插拔的正常瞬态，
+                // 堆栈对用户没有意义（实测驱动更新时只出现一次，但占 4 行）。
+                string hrCode = ex is System.Runtime.InteropServices.COMException ce
+                    ? $"0x{(uint)ce.HResult:X8}" : ex.GetType().Name;
                 Logger.WarnOnce($"gpu-query-{entry.Info.TabTitle}",
-                    $"GPU 适配器（{entry.Info.TabTitle}）DXCore 查询失败（热插拔/驱动重置？）——指标归零", ex);
+                    $"GPU 适配器（{entry.Info.TabTitle}）DXCore 查询失败（{hrCode}，热插拔/驱动重置？）——指标归零");
                 entry.Info.UtilPercent = 0;
                 entry.Info.TopEngineText = "--";
                 entry.Info.TemperatureCelsius = float.NaN;   // never a stale reading on the row

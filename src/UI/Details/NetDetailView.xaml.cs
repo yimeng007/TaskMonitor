@@ -34,11 +34,12 @@ namespace task_monitor
         // scales its tick offset by it (settings 采样间隔).
         private int _intervalMs = 1000;
 
+
         // Hover tooltip + the per-exe icon cache — shared implementations, see UI/Common. The
         // tip state lives in the host so the per-second Refresh can update a shown value
         // without waiting for the mouse to move (what re-fires MouseMove).
         private readonly ChartTipHost _tip = new ChartTipHost();
-        private readonly ProcessIconCache _icons = new ProcessIconCache();
+        private readonly ProcessIconCache _icons = ProcessIconCache.Shared;
 
         // Click-to-copy feedback: the just-copied IP button flashes "已复制" for a moment,
         // then the timer restores the address (kept in Tag).
@@ -66,6 +67,7 @@ namespace task_monitor
 
             // 连接 spans both columns; keep its trim boundary just left of 速率's label.
             BandGrid.LayoutUpdated += (_, _) => UpdateConnTrimBoundary();
+
         }
 
         // 连接 spans both columns, so without a cap it would ellipsize at the window edge,
@@ -193,16 +195,10 @@ namespace task_monitor
             // hole on v4-only networks.
             PublicIpV6Cell.Visibility = string.IsNullOrEmpty(info.PublicIpV6)
                 ? Visibility.Collapsed : Visibility.Visible;
-            // Only the v6 button's tooltip echoes the full address: it's the one button
-            // whose text can trim (CharacterEllipsis), so the tooltip doubles as the
-            // untrimmed-address readout. The other two sit in horizontal StackPanels
-            // (infinite width) and never trim.
-            // 公网 IPv6 是**直连**查的（v6 走不通代理的 CONNECT），所以经代理时它显示的还是
-            // 本机真实 v6 地址。tooltip 只陈述「它是什么」，不写「不随代理变化 / 跟随代理的是 v4」——
-            // 那种写法会让人以为两者本该同步（2026-11-17 反馈：读起来像「v4 变了 v6 就该跟上」）。
-            // 经代理时 v6 一定是「直连地址」（代理只转发 v4 的 TCP 连接），与 v4 的代理出口
-            // 天然不是同一条路径 —— 光靠 tooltip 说明不够显眼，直接在标签上标出来
-            // （2026-11-17 反馈：看到「v4 是海外、v6 是国内」会以为程序算错了）。
+            // 只有 v6 按钮的 tooltip 回显全文 —— 它是唯一会省略号裁剪的那个。
+            // v6 走直连（代理只转发 v4 的 TCP），所以经代理时它是本机真实地址；
+            // tooltip 只陈述事实，不说「不随代理变化」那种会引起误解的话，
+            // 而在标签上直接标出「直连」——否则用户会以为程序算错了（2026-11-17 反馈）。
             PublicIpV6Label.Text = string.IsNullOrEmpty(info.ProxyNote) ? "公网 IPv6：" : "公网 IPv6（直连）：";
             SetIpButton(PublicIpV6Button, info.PublicIpV6, echoAddress: true,
                         note: string.IsNullOrEmpty(info.ProxyNote) ? null : "本机宽带的 IPv6 地址，直连不经代理");
@@ -239,7 +235,7 @@ namespace task_monitor
 
         // ---------- Connection info band ----------
 
-        // 连接 cell: the type with the SSID in parens — "WLAN (LineSoft-Main-2)" /
+        // 连接 cell: the type with the SSID in parens — "WLAN (ExampleSSID)" /
         // "有线" / "未连接".
         // 检测到隧道网卡（VPN / 代理 TUN）时追加「经代理」：统计口径仍是物理网卡，
         // 数字里含代理的加密开销，与运营商账单对不上时这是第一嫌疑人 —— 先告知，少一轮排查。
@@ -320,20 +316,12 @@ namespace task_monitor
 
         // ---------- IP copy-on-click ----------
 
-        // value == null/"" → shows "—" and disables the button (gray, no hand cursor).
-        // The flashing "已复制" button keeps its text — only Tag tracks the new value.
-        // Every button's content is a permanent inner TextBlock (see XAML): the value and
-        // the "已复制" flash swap its TEXT, so the v6 button's CharacterEllipsis trimming
-        // survives the flash cycle. Every tooltip leads with the one-word action "复制";
-        // echoAddress appends the full address on a second line (untrimmed readout) —
-        // suppressed while masked, or the tooltip would leak the hidden address.
-        // 出口 IP 变化提示：公网 IP 每 10 分钟才重查一次，变化最多晚 10 分钟被发现；
-        // 发现后只强调 CHANGE_MARK_MINUTES 分钟。
-        //
-        // **为什么不用「IP 后面加 · 已切换」**：那一行是横向 StackPanel，不会换行、超出直接裁掉。
-        // 实测（368/328 布局，字体 12）：列宽 164 px，「公网 IPv4：143.246.48.3」已占 135.8 px，
-        // 再加 4 个字要 180.7 px —— 超 16.7 px 会被切掉一半；255.255.255.255 这类更长的会超 37.8 px。
-        // 所以改用「零宽度」表达：文字本身变强调色 + tooltip 写「原 → 现」，一个字都不额外占位。
+        // 空值 → 显示「—」并禁用按钮；复制按钮的内容是常驻 TextBlock（见 XAML），
+        // 闪烁态只换文字，v6 的省略号裁剪才不会被破坏。tooltip 以「复制」开头，
+        // 掩码时不再回显全文（否则等于泄露）。
+        // 出口 IP 每 10 分钟才重查，变化后发现后只强调 CHANGE_MARK_MINUTES 分钟。
+        // 不用「· 已切换」：那行是横向 StackPanel，实测已是 135.8/164 px，加 4 字要 180.7 px
+        // 会被切掉 —— 改用零宽度表达（强调色 + tooltip「原 → 现」），不额外占位。
         private const int ChangeMarkMinutes = 5;
         private static readonly Brush IpChangedBrush = CreateIpChangedBrush();
 

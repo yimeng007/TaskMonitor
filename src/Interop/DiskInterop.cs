@@ -27,6 +27,29 @@ namespace task_monitor
 
         internal const int StorageDeviceProperty = 0;           // → STORAGE_DEVICE_DESCRIPTOR (BusType, vendor/product strings)
         internal const int StorageDeviceSeekPenaltyProperty = 7; // → DEVICE_SEEK_PENALTY_DESCRIPTOR (the SSD test, Win8+)
+        // ⚠ STORAGE_PROPERTY_ID 在 0x0F 之后**跳号**（StorageDeviceIoCapabilityProperty = 48 起），
+        //   按顺序数出来的值全错（0x16 当温度 → DeviceIoControl 返回 err=1）。下面都是真实值。
+        internal const int StorageDeviceTemperatureProperty = 0x34;          // → STORAGE_TEMPERATURE_DATA_DESCRIPTOR
+        internal const uint GenericRead = 0x80000000;                        // 温度查询要读权限（管理员）
+        internal const uint GenericWrite = 0x40000000;                       // NVMe SMART 要读写句柄
+        internal const int StorageAdapterProtocolSpecificProperty = 0x31;    // NVMe SMART（主）
+        internal const int StorageDeviceProtocolSpecificProperty = 0x32;     // NVMe SMART（备）
+        internal const int ProtocolTypeNvme = 3;
+        internal const int NvmeDataTypeLogPage = 2;
+        internal const int NvmeSmartLogId = 2;                               // SMART/Health Information
+        // 头部 = TStoragePropertyQuery(8, 只有 PropertyId+QueryType) + TStorageProtocolSpecificData(40) = 48。
+        // 套 Win32 那个带 AdditionalParameters[1] 的 12 字节版本会整块错位 → err=1（2026-11-22 踩过）。
+        internal const int ProtocolSpecificHeaderSize = 48;
+        // 头部内各字段偏移（与 CDI StorageQuery.h 一致）
+        internal const int OffsetPropertyId = 0;
+        internal const int OffsetQueryType = 4;
+        internal const int OffsetProtocolType = 8;
+        internal const int OffsetDataType = 12;
+        internal const int OffsetRequestValue = 16;
+        internal const int OffsetRequestSubValue = 20;
+        internal const int OffsetDataOffset = 24;
+        internal const int OffsetDataLength = 28;
+        internal const int NvmeSmartLogLength = 4096;            // 请求长度（CDI 同值）
         internal const int PropertyStandardQuery = 0;
 
         // STORAGE_BUS_TYPE values DiskSampler switches on (ntddstor.h).

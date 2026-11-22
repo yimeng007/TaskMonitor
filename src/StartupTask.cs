@@ -8,26 +8,11 @@ using System.Text;
 namespace task_monitor
 {
     /// <summary>
-    /// 开机自启动 via a Task Scheduler logon task (NOT the Run registry key). The whole
-    /// point is avoiding a UAC prompt at every boot: the app always runs elevated, and an
-    /// elevated Run-key/console launch would prompt — a scheduled task registered with
-    /// <c>RunLevel=HighestAvailable</c> from an ALREADY-elevated process starts elevated
-    /// at logon silently. The app is always elevated by design (App.RunElevationGate), so
-    /// registration always has the rights it needs.
-    ///
-    /// The task is registered from a generated XML (<c>schtasks /Create /XML</c>) rather
-    /// than command-line switches because the schtasks defaults are wrong for an always-on
-    /// GUI app, and the switches can't change them:
-    ///   - <c>ExecutionTimeLimit</c> defaults to 72h — Task Scheduler would KILL the
-    ///     overlay after three days of uptime; the XML sets PT0S (never).
-    ///   - <c>DisallowStartIfOnBatteries</c>/<c>StopIfGoingOnBatteries</c> default to
-    ///     true — a laptop on battery would silently not auto-start; both false here.
-    /// The principal is the current user by SID with <c>InteractiveToken</c> (a GUI
-    /// overlay can't run S4U), and the logon trigger is pinned to that same user.
-    ///
-    /// State is NOT duplicated in settings.yaml — the task itself is the source of
-    /// truth: <see cref="IsEnabled"/> queries it, <see cref="SetEnabled"/> creates
-    /// (overwrite, so a moved exe is re-pointed on every re-enable) or deletes it.
+    /// 开机自启动 = 计划任务（不用 Run 键：那会每次开机弹 UAC）。
+    /// 注册走生成的 XML（<c>schtasks /Create /XML</c>），因为 schtasks 的默认值对常驻 GUI 是错的：
+    /// <c>ExecutionTimeLimit</c> 默认 72 小时（会被杀）、<c>StopIfGoingOnBatteries</c> 默认 true（笔记本不启）。
+    /// 主体用当前用户 SID + <c>InteractiveToken</c>（GUI 不能 S4U），触发器同一个人。
+    /// 状态不写进 settings.yaml —— **任务本身就是唯一事实**：查它、建它（覆盖）、删它。
     /// </summary>
     internal static class StartupTask
     {
@@ -37,14 +22,9 @@ namespace task_monitor
         /// as "on": we never create one disabled).</summary>
         public static bool IsEnabled() => RunSchtasks($"/Query /TN \"{TaskName}\"") == 0;
 
-        /// <summary>
-        /// 「这份程序会不会开机自启」—— 任务存在、且它指向的就是当前这个 exe。
-        ///
-        /// 为什么要区分：任务计划是**整机唯一**的，不区分副本。用户从另一个文件夹跑一份新的，
-        /// 旧任务还在但指向老目录 —— 只看 IsEnabled() 会显示「开」，可它启动的并不是这一份，
-        /// 界面上就成了「我没调过，怎么是开的」（2026-11-16 反馈）。
-        /// 读不到登记路径时保守地按「开」处理，避免把用户已开启的自启显示成关。
-        /// </summary>
+        /// <summary>「这份程序会不会开机自启」= 任务存在且指向当前 exe。
+        /// 计划任务是整机唯一的，别处跑一份新副本时旧任务还在 —— 只看 IsEnabled() 会误显示成「开」。
+        /// 读不到登记路径时按「开」处理，免得把用户已开的自启显示成关。</summary>
         public static bool IsEnabledForCurrentExe()
         {
             // 从压缩包临时目录里运行：这种「自启」本身就不可信（临时目录会被清理），
@@ -63,6 +43,23 @@ namespace task_monitor
         /// Never throws: the caller is a UI toggle handler, where an escaping exception
         /// means a crash dialog (App's DispatcherUnhandledException hook) for a
         /// best-effort feature.</summary>
+        /// <summary>任务存在、但它指向的 exe 已经不在了（用户移动/改名/删了程序）。
+        /// 这是"开机静默失败"唯一可检测的信号 —— 看得到才谈得上提示。</summary>
+        public static bool RegisteredTargetMissing()
+        {
+            try
+            {
+                if (!IsEnabled()) return false;
+                var registered = RegisteredCommand();
+                if (string.IsNullOrEmpty(registered)) return false;
+                return !File.Exists(registered);
+            }
+            catch { return false; }
+        }
+
+        /// <summary>强制把任务重写成"指向当前 exe"（设置页「修复指向」用）。</summary>
+        public static bool RepairToCurrentExe() => SetEnabled(true);
+
         public static bool SetEnabled(bool on)
         {
             try
@@ -101,6 +98,7 @@ namespace task_monitor
     <LogonTrigger>
       <Enabled>true</Enabled>
       <UserId>{userSid}</UserId>
+      <!-- 不加 Delay：登录即启动，任务栏就绪由程序自己重试（IsPlausibleTaskbarRect） -->
     </LogonTrigger>
   </Triggers>
   <Principals>
@@ -164,14 +162,8 @@ namespace task_monitor
             }
         }
 
-        /// <summary>
-        /// 当前这份 exe 是不是跑在「临时位置」—— 压缩软件的临时解压目录、%TEMP%、回收站。
-        ///
-        /// 为什么不能把自启绑到这些地方：用户常直接在压缩包预览里双击运行，exe 实际落在
-        /// <c>%LOCALAPPDATA%\Tempðzip$Temp\…</c> 之类的位置。绑上去之后，压缩软件清理
-        /// 临时目录（或重启）、下次登录就又是「文件不存在」，等于把问题从一种搬成另一种。
-        /// 2026-11-16 实测：自愈把任务指到了 <c>…\Tempðzip$Tempð$2\…	ask_monitor.exe</c>。
-        /// </summary>
+        /// <summary>当前 exe 是否跑在临时位置（压缩包临时解压目录 / %TEMP% / 回收站）。
+        /// 绑自启等于把「下次开机失效」写死进去（2026-11-16 实测被指到 Tempðzip$Temp 下）。</summary>
         public static bool IsRunningFromTransientLocation()
         {
             try
@@ -200,16 +192,9 @@ namespace task_monitor
         }
 
         /// <summary>
-        /// 启动时自愈：任务存在、但登记的 exe 不是当前这份 → 重新注册（覆盖）。
-        ///
-        /// 为什么要这个：自启状态 = 任务是否存在，而任务里<b>记着注册那一刻的 exe 路径</b>。
-        /// 用户换了位置（重新解压、换目录、从单文件版换成文件夹版）之后，任务还在、
-        /// 设置页照旧显示「开」，但每次登录都去启动一个已不存在的文件 —— 任务计划的
-        /// LastResult 是 0x80070002（ERROR_FILE_NOT_FOUND），界面毫无提示。
-        /// 2026-11-16 实测：任务指向 2026-09-30 的单文件版（文件早已删除），
-        /// 从 10-31 起每次开机都在静默失败。
-        ///
-        /// 只有「用户已经开过自启」才动（不新建）；失败只记日志，绝不弹窗 —— 尽力而为。
+        /// 启动时自愈：任务存在就**整份重写**（不新建、不弹窗，失败只记日志）。
+        /// 必须每次重写而不是「路径不同才写」—— 任务 XML 里的设置（延迟、运行级）会随版本变，
+        /// 只比路径的话旧设置永远留在系统里（2026-11-21：删掉的 20 秒延迟仍在任务里）。
         /// </summary>
         public static bool RefreshIfEnabled()
         {
@@ -219,10 +204,9 @@ namespace task_monitor
                 if (registered == null) return false;          // 没任务 = 用户没开，什么都不做
                 var current = Process.GetCurrentProcess().MainModule?.FileName;
                 if (string.IsNullOrEmpty(current)) return false;
-                if (string.Equals(registered, current, StringComparison.OrdinalIgnoreCase)) return false;
+                // 路径相同也重写（让 XML 跟代码走），开销约 100ms。
 
-                // 临时目录里跑出来的副本**不能**当自启目标：压缩软件清理临时目录后，
-                // 下次登录又会「文件不存在」。保持原登记不动，只记一条提示。
+                // 临时目录里的副本不当自启目标（清理后就「文件不存在」）。
                 if (IsTransientPath(current))
                 {
                     Logger.Warn($"开机自启动：当前在临时目录运行（{current}），跳过改写；"
@@ -231,10 +215,13 @@ namespace task_monitor
                 }
 
                 bool ok = SetEnabledCore(true);
+                bool moved = !string.Equals(registered, current, StringComparison.OrdinalIgnoreCase);
                 if (ok)
-                    Logger.Info($"开机自启动：任务指向已更新 —— {registered} → {current}");
+                    Logger.Info(moved
+                        ? $"开机自启动：任务指向已更新 —— {registered} → {current}"
+                        : $"开机自启动：任务已同步当前程序（{current}）");
                 else
-                    Logger.Warn($"开机自启动：任务指向仍是 {registered}，改写为 {current} 失败");
+                    Logger.Warn($"开机自启动：任务仍指向 {registered}，改写为 {current} 失败");
                 return ok;
             }
             catch (Exception ex)

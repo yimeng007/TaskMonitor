@@ -149,40 +149,45 @@ namespace task_monitor
         [DllImport("kernel32.dll", SetLastError = false)]
         internal static extern ulong GetTickCount64();
 
-        // ---------- idle managed-memory collection ----------
+        // ---------- 空闲内存回收 ----------
         /// <summary>
-        /// One plain GC at event points: collect unreachable windows and UI trees without
-        /// forcing the process's warm pages out of its working set. In particular, trimming
-        /// right after prewarm or a close makes the next Detail open pay soft faults for the
-        /// WPF code, styles and render data that prewarm was meant to keep hot. Windows can
-        /// still page idle memory out naturally when the system is actually under pressure.
-        /// Called by App at event points only (post-prewarm, last WPF window closed) — never
-        /// on a timer (periodic forced collections are pure churn).
-        ///
-        /// <para><b>Two things it deliberately does NOT do</b> (the reported 卡死, whose
-        /// crash lands in interop-stub code with an empty app log — see CrashTrace): it never
-        /// runs more often than <see cref="TrimMinIntervalMs"/> — rapid 切换 detail 窗口 closes a
-        /// popup per switch and used to fire a forced GC per close — and it does NOT
-        /// <c>WaitForPendingFinalizers</c>. Waiting meant every unreachable DirectN/COM wrapper
-        /// was released and finalized ON THE SPOT while the taskbar thread was concurrently
-        /// inside its own COM calls (Draw), which is precisely the window a use-after-free shows
-        /// up in. Without the wait those wrappers are still released — by the finalizer thread,
-        /// in its own time, exactly as during normal operation.</para>
+        /// 事件点上的内存回收：压缩式 GC + 把工作集还给系统。
+        /// 只在"预热完成 / 最后一个窗口关闭 / 引导关闭"这类事件点调用，**不挂定时器**。
+        /// 两条硬规矩（都来自实测崩溃）：
+        /// ① 两次之间至少隔 <see cref="TrimMinIntervalMs"/> —— 连续开关详情窗曾因此频繁强制 GC；
+        /// ② 不 <c>WaitForPendingFinalizers</c> —— 会让 COM 包装器在任务栏线程执行 COM 调用时被就地释放。
         /// </summary>
-        internal static void TrimMemory()
+        internal static void TrimMemory(string reason = null)
         {
             long now = (long)GetTickCount64();
             long gap = _lastTrimTick == 0 ? -1 : now - _lastTrimTick;
             if (gap >= 0 && gap < TrimMinIntervalMs) return;
             _lastTrimTick = now;
             CrashTrace.NoteTrim();
-            Logger.Info($"空闲内存回收：GC（间隔 {TrimMinIntervalMs}ms 限流；距上次 {(gap < 0 ? "首次" : gap + "ms")}）");
-            GC.Collect();
+
+            Logger.Info($"空闲内存回收（{reason ?? "常规"}）：GC 间隔限流 {TrimMinIntervalMs}ms，距上次 {(gap < 0 ? "首次" : gap + "ms")}");
+            // 压缩式：普通 GC 会留空洞，Private 字节降不下来。
+            GC.Collect(2, GCCollectionMode.Forced, blocking: true, compacting: true);
+            // GC 只收托管堆；WPF 渲染缓存 / 位图 / D3D 表面仍挂在工作集里，需显式还回去。
+            try { TrimWorkingSet(); } catch { /* 只为省内存，失败不影响功能 */ }
         }
 
         // A collection closer than this to the previous one is skipped: a burst of window closes
         // must not become a burst of forced GCs.
         private const int TrimMinIntervalMs = 30000;
+
+        [System.Runtime.InteropServices.DllImport("kernel32.dll")]
+        private static extern IntPtr GetCurrentProcess();
+
+        [System.Runtime.InteropServices.DllImport("kernel32.dll", SetLastError = true)]
+        private static extern bool SetProcessWorkingSetSize(IntPtr hProcess, IntPtr min, IntPtr max);
+
+        /// <summary>把当前进程的工作集还给系统（-1,-1 = 由系统决定保留多少）。</summary>
+        private static void TrimWorkingSet()
+        {
+            try { SetProcessWorkingSetSize(GetCurrentProcess(), (IntPtr)(-1), (IntPtr)(-1)); }
+            catch { }
+        }
         private static long _lastTrimTick;
 
         internal const uint SYSTEM_PROCESSOR_PERFORMANCE_INFO_CLASS = 8;

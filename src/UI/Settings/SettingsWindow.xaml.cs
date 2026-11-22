@@ -312,6 +312,7 @@ namespace task_monitor
             WireSection(SecDisplayToggle, SecDisplayBody, SecDisplayChevronRotate, SecDisplaySlide);
 
             AutoStartSwitch.IsOn = autoStartOn;
+            RefreshAutoStartRepairButton();
 
             // 从压缩包临时目录里运行：这种「自启」绑上去就会随临时目录一起消失，
             // 所以显示为关并说明原因 —— 否则用户会看到「我没开过，怎么是开的」（2026-11-16）。
@@ -391,6 +392,24 @@ namespace task_monitor
             // 主动盯着对齐方式：用户去系统设置改完不一定会点回这个窗口，只靠 Activated 会漏。
             // 1 秒一次，状态没变就立刻返回（见 RefreshAnchorAvailability）。
             RefreshAnchorAvailability();
+
+            // 首帧模板应用会把 ctor 里的 IsOn 赋值留在界面上，这里在 Loaded 优先级再对齐一次。
+            Dispatcher.BeginInvoke(new Action(() =>
+            {
+                _alignCache = null;                 // 丢掉可能过期的缓存
+                RefreshAnchorAvailability();
+                if (_anchorLocked)
+                {
+                    _suppressToggle = true;
+                    OnLeftSwitch.IsOn = false;
+                    _suppressToggle = false;
+                    AnchorCombo.IsEnabled = false;
+                    // 打开设置页时不主动弹提示条（见 EnforceAnchorLock 的说明）
+                }
+                Logger.Info($"设置页对齐断言：竖直={TaskbarWindow.IsTaskbarVertical()} 居中={TaskbarWindow.IsTaskbarCenterAligned()} "
+                    + $"锁定={_anchorLocked} 开关IsOn={OnLeftSwitch.IsOn}");
+            }), System.Windows.Threading.DispatcherPriority.Loaded);
+
             // 「固定按 GB 显示」的初始可用性：两个开关都关着时它该是灰的。
             RefreshNetUsageUnitAvailability();
             _alignWatch = new DispatcherTimer { Interval = TimeSpan.FromSeconds(1) };
@@ -692,41 +711,39 @@ namespace task_monitor
             }
         }
 
+        /// <summary>
+        /// 重建显示器选择区：在线的一律列卡片（没任务栏的置灰），保存过但当前离线的多列一张灰卡
+        /// —— 拔屏后不丢选择，插回即可用。
+        /// </summary>
         private void PopulateDisplayPicker(IReadOnlyList<TaskbarDisplayInfo> displays,
             IReadOnlyList<TaskbarDisplaySelection> selectedDisplays)
         {
             var cards = new List<object>();
-            var selectedIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-            if (selectedDisplays != null)
+
+            // 保存过的选择先收一遍：既用于判定"是否勾选"，也用于补齐离线卡片。
+            var chosen = new List<TaskbarDisplaySelection>();
+            foreach (var s in selectedDisplays ?? Array.Empty<TaskbarDisplaySelection>())
+                if (s != null && !string.IsNullOrWhiteSpace(s.Id)) chosen.Add(s);
+            var selectedIds = new HashSet<string>(chosen.ConvertAll(c => c.Id), StringComparer.OrdinalIgnoreCase);
+
+            // 在线的（首次运行时没存过选择 → 只勾主屏）
+            foreach (var display in displays ?? Array.Empty<TaskbarDisplayInfo>())
             {
-                foreach (var selected in selectedDisplays)
-                {
-                    if (selected != null && !string.IsNullOrWhiteSpace(selected.Id)) selectedIds.Add(selected.Id);
-                }
+                if (display == null || string.IsNullOrWhiteSpace(display.Id)) continue;
+                bool selected = selectedDisplays == null ? display.IsPrimary : selectedIds.Contains(display.Id);
+                AddDisplayCard(cards, display.Id, display.Name, display.DeviceName, display.IsPrimary,
+                    display.HasTaskbar, selected, false);
+                seen.Add(display.Id);
             }
 
-            if (displays != null)
+            // 保存过但这会儿不在的（离线灰卡）
+            foreach (var s in chosen)
             {
-                foreach (var display in displays)
-                {
-                    if (display == null || string.IsNullOrWhiteSpace(display.Id)) continue;
-                    bool selected = selectedDisplays == null ? display.IsPrimary : selectedIds.Contains(display.Id);
-                    AddDisplayCard(cards, display.Id, display.Name, display.DeviceName, display.IsPrimary,
-                        display.HasTaskbar, selected, false);
-                    seen.Add(display.Id);
-                }
-            }
-
-            if (selectedDisplays != null)
-            {
-                foreach (var selected in selectedDisplays)
-                {
-                    if (selected == null || string.IsNullOrWhiteSpace(selected.Id) || seen.Contains(selected.Id)) continue;
-                    AddDisplayCard(cards, selected.Id, TaskbarDisplayCatalog.ResolveDisplayName(selected.Id, selected.Name),
-                        null, false, false, true, true);
-                    seen.Add(selected.Id);
-                }
+                if (seen.Contains(s.Id)) continue;
+                AddDisplayCard(cards, s.Id, TaskbarDisplayCatalog.ResolveDisplayName(s.Id, s.Name),
+                    null, false, false, true, true);
+                seen.Add(s.Id);
             }
             DisplayExpander.Items = cards;
             if (CountCheckedDisplays() == 0)
@@ -1155,21 +1172,60 @@ namespace task_monitor
         {
             bool vertical = TaskbarWindow.IsTaskbarVertical();
             bool centered = TaskbarWindow.IsTaskbarCenterAligned();
-            if (_alignCache == ( vertical, centered )) return;
-            _alignCache = (vertical, centered);
-            ApplyAnchorAlignmentHint(vertical, centered);
+            bool shouldLock = App.DetectThirdPartyTaskbar() != null || (!vertical && !centered);
+            if (_alignCache != (vertical, centered) || shouldLock != _anchorLocked)
+            {
+                _alignCache = (vertical, centered);
+                ApplyAnchorAlignmentHint(vertical, centered);
+                Logger.Info($"对齐方式变化：竖直={vertical} 居中={centered} → 锁定={_anchorLocked}");
+            }
+
+            // 每秒断言一次：即使某条路径把开关/下拉重新打开，也会在 1 秒内被拉回锁定态。
+            // （2026-11-21 实测：居中→左对齐切换后，开关仍是「开」、下拉仍可选，说明单靠
+            //  Apply 那一次赋值会被后续路径覆盖。）
+            EnforceAnchorLock();
+        }
+
+        /// <summary>锁定时把开关/下拉拉回正确状态；每秒调用一次即收敛（不弹提示条）。</summary>
+        private void EnforceAnchorLock()
+        {
+            if (!_anchorLocked)
+            {
+                return;
+            }
+
+            if (OnLeftSwitch.IsOn)
+            {
+                _suppressToggle = true;
+                OnLeftSwitch.IsOn = false;
+                _suppressToggle = false;
+                Logger.Info("锁定断言：开关被强制关闭");
+            }
+
+            if (AnchorCombo.IsEnabled)
+            {
+                AnchorCombo.IsEnabled = false;
+                Logger.Info("锁定断言：位置下拉被禁用");
+            }
+
+            // 不弹提示条：每秒 Show 会把 8 秒倒计时重置，导致它永不收起。只在点开关时弹。
         }
 
         private void ApplyAnchorAlignmentHint(bool vertical, bool centered)
         {
-            _anchorLocked = !vertical && !centered;
+            // 第三方任务栏工具下位置与之互抢（覆盖层右移、图标被挤），锁死在「关 = 最左端」。
+            string thirdParty = App.DetectThirdPartyTaskbar();
+            _anchorLocked = thirdParty != null || (!vertical && !centered);
 
-            const string when = "系统任务栏在底部（默认）或顶部时生效：开启则按下面的「任务栏位置」摆放；"
-                                + "关闭则固定在任务栏最左端。";
-            const string verticalTail = "切到左侧或右侧时按下方「竖排任务栏」的规则。";
-            const string lockedTail = "当前任务栏为「左对齐」，左端被开始按钮和图标占满、没有位置可放，"
-                                      + "所以这个开关已锁定，任务栏窗口暂时停靠托盘左侧。"
-                                      + "把「任务栏对齐方式」改回「居中」后会自动解锁。";
+            const string when = "系统任务栏在底部（默认）或顶部时生效：开启则按下面的「任务栏位置」摆放，"
+                                + "关闭则固定在任务栏最左端。\n"
+                                + "注意：这个开关只决定窗口摆在哪，不控制显示或隐藏（要隐藏请关掉对应采样项，"
+                                + "或右键托盘图标退出）。";
+            const string verticalTail = "\n切到左侧或右侧时按下方「竖排任务栏」的规则。";
+            string lockedTail = thirdParty != null
+                ? "\n\n已锁定（检测到 " + thirdParty + "）：它会重写任务栏布局，位置固定在「关」（最左端）。"
+                  + "想自定义位置请改用悬浮模式。"
+                : "\n\n已锁定（任务栏「左对齐」）：这个开关暂不可用，窗口停在托盘图标左侧（屏幕右边）。";
 
             string switchDesc, anchorDesc;
             if (vertical)
@@ -1179,8 +1235,10 @@ namespace task_monitor
             }
             else if (_anchorLocked)
             {
-                switchDesc = when + lockedTail + verticalTail;
-                anchorDesc = "已锁定：左对齐任务栏没有可选的横向位置。";
+                switchDesc = when + lockedTail;      // 竖排规则那句只在可用状态下才有意义
+                anchorDesc = thirdParty != null
+                    ? "已锁定：检测到 " + thirdParty + "，位置固定在最左端。"
+                    : "已锁定：左对齐下没有可选的横向位置。";
             }
             else
             {
@@ -1192,6 +1250,46 @@ namespace task_monitor
             OnLeftCard.Description = switchDesc;
             AnchorCard.Description = anchorDesc;
 
+            // 卸载入口卡：只在检测到第三方任务栏时出现，卸载/未安装时完全隐藏。
+            if (ThirdPartyUninstallCard != null)
+            {
+                if (thirdParty != null)
+                {
+                    ThirdPartyUninstallCard.Visibility = Visibility.Visible;
+                    ThirdPartyUninstallCard.Header = "卸载 " + thirdParty;
+                    ThirdPartyUninstallCard.Description =
+                        "检测到它在接管任务栏布局。点右侧按钮打开它的卸载程序（不会静默卸载）；"
+                        + "卸载并重启资源管理器后，任务栏位置选项会自动恢复。";
+                    if (ThirdPartyUninstallButton != null) ThirdPartyUninstallButton.Content = "打开卸载程序";
+                }
+                else
+                {
+                    ThirdPartyUninstallCard.Visibility = Visibility.Collapsed;
+                }
+            }
+
+            // 提示条文案：装/开着 StartAllBack 时说 SAB；否则保持原来的「左对齐」说法。
+            // 不在运行（已卸载）时 thirdParty 为 null，自动回到原文案，不会残留 SAB 字样。
+            if (AnchorLockedTitle != null && AnchorLockedBody != null)
+            {
+                if (thirdParty != null)
+                {
+                    AnchorLockedTitle.Text = "检测到 " + thirdParty + "，任务栏位置已锁定";
+                    AnchorLockedBody.Text = "它会接管任务栏的布局（开始按钮与中间图标区），"
+                        + "本程序一改位置就会和它抢，实测会出现「图标被挤、窗口一路右移出屏幕」。"
+                        + "所以位置固定在最左端，且「贴近系统托盘」不可选。"
+                        + "卸载 " + thirdParty + " 并重启资源管理器后，这里会自动恢复全部选项。";
+                }
+                else
+                {
+                    AnchorLockedTitle.Text = "当前任务栏是「左对齐」，这个开关暂时锁定了";
+                    AnchorLockedBody.Text = "任务栏左端被开始按钮和任务图标占满、没有空位，"
+                        + "所以窗口暂时停在托盘图标左侧（屏幕右边）。"
+                        + "要恢复选择：设置 → 个性化 → 任务栏 → 任务栏对齐方式，改成「居中」；"
+                        + "改完切回这里会自动解锁。";
+                }
+            }
+
             if (_anchorLocked)
             {
                 // 自动关闭 = 落到托盘左侧（左对齐下唯一可用的位置），并把下拉一起锁上。
@@ -1199,6 +1297,26 @@ namespace task_monitor
                 OnLeftSwitch.IsOn = false;
                 _suppressToggle = false;
                 AnchorCombo.IsEnabled = false;
+            }
+
+            // 「贴近系统托盘」在第三方任务栏下会形成正反馈，一律禁用。
+            if (thirdParty != null)
+            {
+                for (int i = 0; i < AnchorCombo.Items.Count; i++)
+                {
+                    if (AnchorCombo.Items[i] is ComboBoxItem item)
+                    {
+                        bool isRight = i == 2;          // 0 最左端 / 1 贴近开始按钮 / 2 贴近系统托盘
+                        item.IsEnabled = !isRight;
+                        item.ToolTip = isRight
+                            ? "第三方任务栏（" + thirdParty + "）下不可用：会与它抢布局，请改用悬浮模式"
+                            : null;
+                    }
+                }
+                if (AnchorCombo.SelectedIndex == 2)
+                {
+                    AnchorCombo.SelectedIndex = 0;
+                }
             }
             else
             {
@@ -1214,6 +1332,8 @@ namespace task_monitor
                 }
                 AnchorCombo.IsEnabled = OnLeftSwitch.IsOn;
             }
+
+            EnforceAnchorLock();
         }
 
         /// <summary>
@@ -1302,6 +1422,38 @@ namespace task_monitor
                 new System.Windows.Media.Animation.DoubleAnimation(1, 0, HintAnimDuration));
         }
 
+        /// <summary>
+        /// 「打开卸载程序」按钮：确认后交给 App.TryOpenUninstaller 统一处理（与启动提示共用一份实现）。
+        /// </summary>
+        private void ThirdPartyUninstall_Click(object sender, RoutedEventArgs e)
+        {
+            string detected = App.DetectThirdPartyTaskbar();
+            if (detected == null)
+            {
+                System.Windows.MessageBox.Show(this, "没有检测到第三方任务栏工具。", "TaskMonitor",
+                    MessageBoxButton.OK, MessageBoxImage.Information);
+                return;
+            }
+
+            string ask = "将打开 " + detected + " 的卸载程序。" + NL + NL
+                + "卸载后任务栏回到系统原始状态，本程序的位置选项（含「贴近系统托盘」）会自动恢复可用。" + NL
+                + "卸载动作请在卸载程序里确认 —— 我们只负责把界面拉起来。" + NL + NL
+                + "现在打开吗？";
+            var r = System.Windows.MessageBox.Show(this, ask, "卸载 " + detected,
+                MessageBoxButton.YesNo, MessageBoxImage.Question);
+            if (r != MessageBoxResult.Yes) return;
+
+            if (!App.TryOpenUninstaller(detected))
+            {
+                System.Windows.MessageBox.Show(this,
+                    "没找到 " + detected + " 的卸载程序。" + NL + "请到 控制面板 → 程序和功能 里卸载。",
+                    "TaskMonitor", MessageBoxButton.OK, MessageBoxImage.Warning);
+            }
+        }
+
+        /// <summary>换行符常量：避免在插值里被工具链转义吃掉。</summary>
+        private const string NL = "\n";
+
         private void AnchorLockedHintClose_Click(object sender, RoutedEventArgs e) => HideAnchorLockedHint();
 
         private void OnLeftSwitch_Toggled(object sender, RoutedEventArgs e)
@@ -1333,6 +1485,44 @@ namespace task_monitor
         {
             if (!_loaded) return;
             _autoStartChanged?.Invoke(AutoStartSwitch.IsOn);
+            RefreshAutoStartRepairButton();
+        }
+
+        /// <summary>
+        /// 「修复指向」按钮常显（用户随时可手动重指）。这里只负责在"任务指向已失效"时
+        /// 把卡片描述换成一句警告 —— 否则用户不会想到去点那个按钮。
+        /// </summary>
+        private void RefreshAutoStartRepairButton()
+        {
+            if (AutoStartCard == null) return;
+
+            if (StartupTask.RegisteredTargetMissing())
+            {
+                AutoStartCard.Description =
+                    "检测到自启指向的程序已不在原位（移动或改名过）—— 点「修复指向」改到当前这份。";
+                return;
+            }
+
+            // 这里不放"没有管理员权限"之类的提示：程序由计划任务拉起（不弹 UAC），
+            // 受管权限（CPU/GPU 计数器、SRUM、计划任务本身）都是齐的。
+            AutoStartCard.Description =
+                "登录时由计划任务自动启动，不弹 UAC；移动过程序后点「修复指向」重新指向当前程序。";
+        }
+
+        private void AutoStartRepair_Click(object sender, RoutedEventArgs e)
+        {
+            bool wasMissing = StartupTask.RegisteredTargetMissing();
+            bool ok = StartupTask.RepairToCurrentExe();
+            RefreshAutoStartRepairButton();
+
+            string text = ok
+                ? (wasMissing
+                    ? "已把开机自启动重新指向当前程序。" + NL + "下次登录将启动这一份。"
+                    : "开机自启动已指向当前程序，无需修复。")
+                : "修复失败，可能是计划任务被组策略限制。" + NL
+                  + "可以先把上面的开关关掉、再打开试一次；仍不行请到「任务计划程序」里删除 TaskMonitor 任务后重开开关。";
+            System.Windows.MessageBox.Show(this, text, "TaskMonitor", MessageBoxButton.OK,
+                ok ? MessageBoxImage.Information : MessageBoxImage.Warning);
         }
 
         private void ThemeCombo_SelectionChanged(object sender, SelectionChangedEventArgs e)

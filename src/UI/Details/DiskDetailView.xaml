@@ -115,12 +115,40 @@
                                 <TextBlock Text="{Binding WriteBytesPerSec, Converter={StaticResource NetRate}}" FontSize="12" />
                             </StackPanel>
                         </Grid>
-                        <!-- Row 4: 平均响应时间 -->
-                        <StackPanel Orientation="Horizontal">
-                            <TextBlock Text="平均响应时间：" FontSize="12"
-                                       Foreground="{DynamicResource TextFillColorSecondaryBrush}" />
-                            <TextBlock Text="{Binding ResponseMs, StringFormat={}{0:F1} ms}" FontSize="12" />
-                        </StackPanel>
+                        <!-- Row 4: 平均响应时间 | 温度（读不到显示双击横线占位，不猜值） -->
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="*" />
+                            </Grid.ColumnDefinitions>
+                            <StackPanel Grid.Column="0" Orientation="Horizontal">
+                                <TextBlock Text="平均响应时间：" FontSize="12"
+                                           Foreground="{DynamicResource TextFillColorSecondaryBrush}" />
+                                <TextBlock Text="{Binding ResponseMs, StringFormat={}{0:F1} ms}" FontSize="12" />
+                            </StackPanel>
+                            <StackPanel Grid.Column="1" Orientation="Horizontal">
+                                <TextBlock Text="温度：" FontSize="12"
+                                           Foreground="{DynamicResource TextFillColorSecondaryBrush}" />
+                                <TextBlock Text="{Binding TemperatureText}" FontSize="12" />
+                            </StackPanel>
+                        </Grid>
+                        <!-- Row 5: 通电时长 | 剩余寿命（只有 NVMe SMART log 给，读不到显示占位横线） -->
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="*" />
+                            </Grid.ColumnDefinitions>
+                            <StackPanel Grid.Column="0" Orientation="Horizontal">
+                                <TextBlock Text="通电：" FontSize="12"
+                                           Foreground="{DynamicResource TextFillColorSecondaryBrush}" />
+                                <TextBlock Text="{Binding PowerOnHoursText}" FontSize="12" />
+                            </StackPanel>
+                            <StackPanel Grid.Column="1" Orientation="Horizontal">
+                                <TextBlock Text="剩余寿命：" FontSize="12"
+                                           Foreground="{DynamicResource TextFillColorSecondaryBrush}" />
+                                <TextBlock Text="{Binding LifePercentText}" FontSize="12" />
+                            </StackPanel>
+                        </Grid>
                     </ikw:SimpleStackPanel>
                 </DataTemplate>
             </TabControl.ContentTemplate>

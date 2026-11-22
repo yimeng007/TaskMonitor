@@ -117,36 +117,23 @@ namespace task_monitor
         // follow-up — the block height is the one knob, everything inside it is derived
         // (DrawStripLines).
         //
-        // ROW PITCH: the COMPACT 16-DIP line is the single-column strip's form (it is the
-        // whole point of a narrow bar — see the 48-DIP block above). The multi-column GRID is
-        // not compact: it exists because a WIDE bar has room, and at 16 DIP the 13px line box
-        // (~17 DIP) has no breathing space above/below (the 2026-10-17 "多列时边距不用这么
-        // 紧凑，单列才紧凑" follow-up). So a grid row is 24 DIP — 1.5× the strip line, the
-        // vertical room the width-adaptive form gets for free.
+        // 行距：单列条带用 16 DIP（窄条的本分）；多列网格给 24 DIP —— 13px 行盒约 17 DIP，
+        // 16 会让它贴死上下边（2026-10-17「多列别这么紧凑，单列才紧凑」）。
         private const float STRIP_H = 16f;                 // ONE-LINE single-column strip (compact form; DIPs at 96 DPI)
         private const float GRID_ROW_H = 24f;              // one MULTI-COLUMN grid row (roomy form)
         private const float STRIP_TWO_LINE_MIN_W = 72f;    // one-line pairs need this much; a 70-DIP cell (stacked only) already fits
         private const float STRIP_BLOCK_H = 44f;           // one two-line metric BLOCK (DIPs at 96 DPI)
         private const float STRIP_BLOCK_PAD = 4f;          // …of which this much sits above and below the pair
-        private const float STRIP_LINE_GAP = 1f;           // …and this much between a label and its value
-                                                           // (the pair's own gap — ~17px at 200% here, against
-                                                           // ~27px of block separation; the 2026-09-30
-                                                           // "文案和数值再近一点点" trim, 4 → 1 DIP)
+        private const float STRIP_LINE_GAP = 1f;           // 标签与数值之间的间隙（2026-09-30「再近一点点」4 → 1 DIP）
         private const float LAYOUT_FIT_EPSILON = 1e-4f;    // float slack for "do this many columns fit"
 
-        // 紧凑模式 (设置 → 外观): one switch that tightens EVERY form's item pitch — the
-        // horizontal grid's cells (and with them the whole overlay/floating width), the
-        // vertical multi-column grid's row pitch, the two-line block's height and its
-        // padding, and the one-line rows' horizontal inset. The FLOORS here are text-fit
-        // measurements at 13px Segoe UI (FormattedText, 2026-10-17), not taste: the widest
-        // stacked row is 内存 + 100% = 57.7 DIP → cell 65 with inset 3 keeps a 1.3-DIP gap
-        // between the label and its value; the widest 网络 value is a 10-Gbit NIC's
-        // "1192.1 MB/s" ≈ 71.3 DIP → column 78 with inset 3 keeps 0.7. Cells are NO_WRAP —
-        // below those floors the label and the value collide instead of truncating. The
-        // grid row drops only to 18 (not the strip's 16): 18 still centres the ~17.3-DIP
-        // line box without grazing the row boundaries, which is the "仍保持美观" half of
-        // the ask; the two-line block keeps ≥1 DIP of derived line slack at 40. The
-        // one-line strip's own 16-DIP pitch is ALREADY the compact form — untouched.
+        // 紧凑模式（设置 → 外观）：一个开关同时收紧所有形态的间距 —— 横向格子宽度、
+        // 竖向网格行距、双行块高度与内边距、单行的水平内缩。
+        // 这些下限是 **13px Segoe UI 的实测宽度**，不是审美：最宽堆叠行「内存+100%」=57.7 DIP
+        // → 格 65 + 内缩 3 还留 1.3；最宽网络值「1192.1 MB/s」≈71.3 → 列 80 才不撞。
+        // 格子是 NO_WRAP，低于下限就会重叠而不是截断。网格行只降到 18（不是条带的 16），
+        // 18 仍能居中 17.3 DIP 的行盒且不擦边 —— 这是「仍保持美观」那半条要求。
+        // 单行条带本身就是 16 DIP（已是最紧），不参与。
         private static readonly float[] CompactGroupWidths = { 65f, 65f, 65f, 80f };  // 同上：紧凑模式也同宽
         private static float GroupW(int g, bool compact) => (compact ? CompactGroupWidths : GroupWidths)[g];
         private static float GridRowH(bool compact) => compact ? 18f : GRID_ROW_H;
@@ -154,19 +141,12 @@ namespace task_monitor
         private static float StripBlockPad(bool compact) => compact ? 2f : STRIP_BLOCK_PAD;
         private static float RowInset(bool compact) => compact ? 3f : 5f;
 
-        // The MULTI-row strip blocks' heights (任务栏显示 两者's three-line GPU block,
-        // 网络's four-line ↑/↓ block). BOTH modes shrink them to the block's own content +
-        // the mode's regular pads, so every block keeps the same outer rhythm (4+4 DIP
-        // between blocks by default, 2+2 in 紧凑模式). The default originally spanned two
-        // regular blocks (88) and spread the leftover BETWEEN its lines — the GPU block's
-        // internal gaps (~10 DIP) ended up LARGER than the 8-DIP block gaps, breaking the
-        // "tighter inside than outside" grouping (the 2026-10-19 "非紧凑模式下 GPU、网络
-        // 那里间距大了" report); every other form (horizontal cells, the multi-column
-        // grid, the one-line strip) gives these rows no extra separation at all.
-        // Derivations: default = the strip's regular 17.5-DIP pitch — GPU 4 + 3×17.5+2×1
-        // + 4 = 62.5, 网络 4 + 4×17.5+3×1 + 4 = 81 (the span-derived bands then land
-        // exactly ON that pitch); compact = the natural bands below — GPU 15+1+17.5+1+17.5
-        // + 2×2 = 56, 网络 2×(15+1+17.5)+1 + 2×2 = 72.
+        // 多行块高度（两者模式的三行 GPU 块、网络的四行 ↑/↓ 块）：两种模式都收缩到
+        // 「内容 + 常规内边距」，保持与普通块一样的外节奏（默认 4+4 DIP，紧凑 2+2）。
+        // 默认值按条带的 17.5 行距推导：GPU 4+3×17.5+2×1+4=62.5、网络 4+4×17.5+3×1+4=81；
+        // 紧凑模式用自然带：GPU 15+1+17.5+1+17.5+2×2=56、网络 2×(15+1+17.5)+1+2×2=72。
+        // 曾经的坑：默认值直接跨两个普通块（88），把余量摊到行间 → 块内间距(≈10) 比块间(8) 还大
+        // （2026-10-19「非紧凑下 GPU、网络 那里间距大了」）。
         private static float GpuBothStripBlockH(bool compact) => compact ? 56f : 62.5f;
         private static float NetStripBlockH(bool compact) => compact ? 72f : 81f;
 
@@ -480,6 +460,21 @@ namespace task_monitor
         // it as windows open/close, and the (configurable, up to 2s) sample tick would
         // leave it overlapping the overlay for a whole interval.
         private const int POS_INTERVAL_MS = 100;
+        /// <summary>任务栏族探测重试秒数。SAB 会让两族特征同时消失，长时间探测只是白等并卡住心跳。</summary>
+        private const int FamilyProbeAttempts = 3;
+        /// <summary>本次进程是否已经探测超时过——超时后不再重复探测（否则每次重建都要再等一遍）。</summary>
+        private static bool _familyProbeTimedOut;
+        /// <summary>上一次观察到的任务按钮带宽/高（用来发现"带宽被外部程序一档档压窄"）。</summary>
+        private static int _lastBandW = -1;
+        /// <summary>连续变窄的次数；≥2 时停止收缩（见 band-shrink-loop）。</summary>
+        private static int _bandShrinkStreak;
+        /// <summary>上一次真正落盘的覆盖层 x（-1 = 还没摆过）；用于发现"单拍跳一个身位"的逃逸。</summary>
+        private static int _lastPlacedX = -1;
+        /// <summary>连续逃逸次数；≥2 时停止跟随（见 pos-runaway）。</summary>
+        private static int _posRunawayStreak;
+        /// <summary>任务按钮带至少要留的宽度。低于它说明带宽被外部程序改过（如 StartAllBack），
+        /// 宁可不缩，也不能把任务栏图标挤没。</summary>
+        private const int MinTaskBandRemainder = 80;
         // 贴边隐藏's slide animation (hide/peek): armed only while a slide is in flight.
         // 10ms = USER_TIMER_MINIMUM; the ease-out step (StepFloatSlide) makes a typical
         // slide run ~100-150ms, well under the eye's flicker-fusion for small moves.
@@ -1134,8 +1129,7 @@ namespace task_monitor
                 taskbar = target?.TaskbarHwnd ?? IntPtr.Zero;
                 if (taskbar != IntPtr.Zero
                     && TryGetWindowRectGuarded(taskbar, 500, out taskbarRect)
-                    && taskbarRect.right - taskbarRect.left > 0
-                    && taskbarRect.bottom - taskbarRect.top > 0)
+                    && IsPlausibleTaskbarRect(taskbarRect))
                     break;
                 if (probeWaits++ == 0)
                     Logger.Info($"显示器 {displayName} 的任务栏尚未就绪——每秒重试，等待可取消");
@@ -1156,9 +1150,16 @@ namespace task_monitor
             bool classical = false;
             IntPtr hBar = IntPtr.Zero, hMin = IntPtr.Zero;
             WindowInterop.RECT rcBar = default, rcMin = default;
-            if (!IsWindows11Taskbar(taskbar))
+            // 2026-11-20：装上 StartAllBack 这类"重写任务栏"的工具后，两族特征会同时消失，
+            // 原来的 10 秒探测等于每次启动白等 10 秒、期间 UI 线程被 Sleep 卡住（心跳停滞 5~12s）。
+            // 改成 3 秒；一旦超时就记住，本次进程后续重建不再重复探测（直接走 Win11 锚点）。
+            if (_familyProbeTimedOut)
             {
-                for (int i = 0; i < 10; i++)
+                Logger.Debug("任务栏族探测已超时过——本次进程直接用 Win11 锚点（不再重探）");
+            }
+            else if (!IsWindows11Taskbar(taskbar))
+            {
+                for (int i = 0; i < FamilyProbeAttempts; i++)
                 {
                     if (_stopRequested) break;
                     if (IsWindows11Taskbar(taskbar)) break;   // the bridge child appeared meanwhile
@@ -1166,14 +1167,19 @@ namespace task_monitor
                     {
                         classical = true;
                         break;
-                }
+                    }
                     Thread.Sleep(1000);
                     TryGetWindowRectGuarded(taskbar, 500, out taskbarRect);   // boot layout still settling (guarded, gotchas §43)
                 }
+                if (!classical && !IsWindows11Taskbar(taskbar))
+                {
+                    _familyProbeTimedOut = true;
+                    Logger.Warn("任务栏族探测 " + FamilyProbeAttempts + "s 超时：既无 Win11 XAML 桥也无经典 ReBar 链"
+                        + "——回退 Win11 锚点（多半装有 StartAllBack / ExplorerPatcher 这类重写任务栏的工具，"
+                        + "本次进程后续不再重探）");
+                }
             }
             if (_stopRequested) return;
-            if (!classical && !IsWindows11Taskbar(taskbar))
-            Logger.Warn("任务栏族探测 10s 超时：既无 Win11 XAML 桥（DesktopWindowContentBridge）也无经典 ReBar 链——回退 Win11 锚点定位（TrayNotifyWnd 两族均有，优雅降级）");
 
             // Which FORM this window takes (悬浮模式 ⟷ taskbar-embedded). A snapshot: a
             // settings flip destroys this window and re-enters Start() with the new value
@@ -2480,17 +2486,10 @@ namespace task_monitor
         // D2D error message says ("recreate, rerender the entire frame and reattempt
         // present").
         //
-        // Two rules, both learned from the 2026-08-08 report (崩溃报告 #1..#25, one per tick,
-        // WndProc msg=0x113):
-        //   1. NEVER let it reach the crash channel. `ctx.EndDraw()` is DirectN's THROWING
-        //      helper: it raises a Win32Exception whose HResult is E_FAIL — the real code
-        //      (D2DERR_RECREATE_TARGET) is already lost by then, so a handler cannot tell a
-        //      driver update from a genuine bug. Read the HRESULT instead (Draw,
-        //      ResizeBackBuffer).
-        //   2. Rebuild in place. The overlay window, its taskbar embed, the shared snapshot and
-        //      geometry all stay; only the pipeline is recreated, so recovery costs one
-        //      frozen frame and needs no re-embed (the expensive/fragile part of the
-        //      explorer-restart path).
+        // 两条规矩（都来自 2026-08-08 那批崩溃报告：#1..#25，每拍一条，WndProc msg=0x113）：
+        //   1. 不让它进崩溃通道 —— DirectN 的 EndDraw 抛异常时 HResult 已变成无用的 E_FAIL，
+        //      必须读返回值才知道是"设备丢失"还是真 bug；
+        //   2. 就地重建 —— 窗口/嵌入/快照/几何都保留，只重建渲染管线，代价是冻结一帧。
         // --------------------------------------------------------------------
 
         // The classic "recreate the target" codes. D2D can also answer something generic once
@@ -3125,6 +3124,14 @@ namespace task_monitor
         /// 所以判据取「屏幕上现在是什么样」—— 开始按钮中心落在任务栏前 1/3 之外即为居中。
         /// 横排看 x，竖排看 y（竖排时 x 永远是任务栏那 48px 宽，毫无意义）。
         /// </summary>
+        /// <summary>任务栏矩形是否"像个真任务栏"：横排宽≥200 且高≥20，竖排反过来。
+        /// 登录瞬间会读到 1×1 之类的假矩形，按它定位就会落到 (0,0)。</summary>
+        private static bool IsPlausibleTaskbarRect(WindowInterop.RECT r)
+        {
+            int w = r.right - r.left, h = r.bottom - r.top;
+            return (w >= 200 && h >= 20) || (h >= 200 && w >= 20);
+        }
+
         internal static bool IsTaskbarCenterAligned() => ActualTaskbarCentered() ?? (ReadExplorerAdvancedDword("TaskbarAl", 1) != 0);
 
         /// <summary>null = 读不到（Start 窗口缺失/矩形异常/任务栏还没建好），调用方退回注册表。</summary>
@@ -4180,6 +4187,14 @@ namespace task_monitor
                 return;
             }
             if (!TryGetWindowRectGuarded(s.TaskbarHwnd, 300, out var taskbarRect)) return;
+            // 矩形"不像任务栏"就跳过这一拍 —— 登录瞬间会读到 1×1，按它算会被钳到 (0,0)（上游 #4）。
+            if (!IsPlausibleTaskbarRect(taskbarRect))
+            {
+                Logger.WarnOnce("taskbar-rect-not-ready",
+                    $"任务栏矩形异常（{taskbarRect.right - taskbarRect.left}x{taskbarRect.bottom - taskbarRect.top}）"
+                    + "——本轮不定位，等待布局就绪");
+                return;
+            }
 
             // 任务栏自己不在显示器内 = 它正在自动隐藏/滑出。此时不重摆：
             // 我们是它的子窗口，Windows 已经带着我们走了；这时再 MoveWindow 等于和动画抢方向。
@@ -4577,14 +4592,37 @@ namespace task_monitor
 
             if (!s.Vertical)
             {
-                // TrafficMonitor's m_last_width throttle: explorer's re-expansion shows up
-                // as a band width different from what we left (full width - our width).
-                if (!force && rcMin.right - rcMin.left == s.LastMinLength) return;
+                // 幂等判据：比"上一次**看到的**带宽"，不是"我们设成的宽度"。
+                // 改前比的是 bandW - PhysicalWidth：只要外部程序（StartAllBack 等）把我们设的
+                // 宽度改回去，每拍都会判成"没生效"再减一次 → 单调递减直到按钮区归零。
                 int bandW = rcMin.right - rcMin.left;
+                if (!force && bandW == s.LastMinLength) return;
+                // 带宽连续两拍变窄 = 外部程序在改布局（它接受我们的收缩又自己重排），
+                // 此时停手，避免覆盖层被一路推着右移。
+                if (bandW < _lastBandW)
+                {
+                    if (++_bandShrinkStreak >= 2)
+                    {
+                        Logger.WarnOnce("band-shrink-loop",
+                            $"任务按钮带连续变窄（现在 {bandW}px，上次 {_lastBandW}px）——判定外部程序在改布局，"
+                            + "已停止收缩以免覆盖层持续右移；若位置仍不对，建议改用悬浮模式");
+                        _lastBandW = bandW;
+                        return;
+                    }
+                }
+                else { _bandShrinkStreak = 0; }
+                _lastBandW = bandW;
+                if (bandW - s.PhysicalWidth < MinTaskBandRemainder)
+                {
+                    Logger.WarnOnce("band-too-narrow",
+                        $"任务按钮带仅 {bandW}px，装不下 {s.PhysicalWidth}px 的覆盖层——本轮跳过"
+                        + "（可能装有 StartAllBack / ExplorerPatcher 这类第三方任务栏工具，建议改用悬浮模式）");
+                    return;
+                }
                 s.MinOriRect = rcMin;            // explorer's current full rect — the exit-restore target
                 s.MinOriValid = true;
                 s.MinSpace = rcMin.left - rcBar.left;
-                s.LastMinLength = bandW - s.PhysicalWidth;
+                s.LastMinLength = bandW - s.PhysicalWidth;   // 记"收缩后的期望值"：下一拍读到它就说明是我们自己留下的
                 int x;
                 // The band move is a cross-thread call into explorer — OFF the message
                 // loop, via the worker's bounded wait (the 卡死 root fix, gotchas §43).
@@ -4611,6 +4649,29 @@ namespace task_monitor
                 }
                 CrashTrace.NoteStep("经典重定位:移本窗(横)");
                 int y = Math.Max(0, (rcBar.bottom - rcBar.top - s.PhysicalHeight) / 2);   // centred in the ReBar
+
+                // 贴右时会形成正反馈（我们把自己摆在带右端 → 带左界被推右 → x 再涨）。
+                // 两道保险：夹紧到 ReBar 客户区内；单拍横移超过一个自身宽度就停手。
+                int barW = Math.Max(1, rcBar.right - rcBar.left);
+                int barH = Math.Max(1, rcBar.bottom - rcBar.top);
+                int maxX = Math.Max(0, barW - s.PhysicalWidth);
+                if (x < 0) x = 0;
+                if (x > maxX) x = maxX;
+                if (y + s.PhysicalHeight > barH) y = Math.Max(0, barH - s.PhysicalHeight);
+
+                if (_lastPlacedX >= 0 && Math.Abs(x - _lastPlacedX) > s.PhysicalWidth && !force)
+                {
+                    if (++_posRunawayStreak >= 2)
+                    {
+                        Logger.WarnOnce("pos-runaway",
+                            $"覆盖层位置单拍跳动超过自身宽度（{_lastPlacedX} → {x}）——判定布局被外部程序改写，"
+                            + "已停止跟随（位置保持不变），建议改用悬浮模式");
+                        return;
+                    }
+                }
+                else { _posRunawayStreak = 0; }
+                _lastPlacedX = x;
+
                 WindowInterop.MoveWindow(hwnd, x, y, s.PhysicalWidth, s.PhysicalHeight, true);
                 Logger.Debug($"经典重定位{(force ? "（强制）" : "")}：任务按钮带 {bandW}→{Math.Max(0, bandW - s.PhysicalWidth)}px，覆盖层 ({x},{y}) {s.PhysicalWidth}x{s.PhysicalHeight}");
             }
@@ -4624,12 +4685,19 @@ namespace task_monitor
                 // every forced pass (采样 toggle, DPI change, orientation flip, exit)
                 // re-measured the shrunken band and took our height off it again until the
                 // task buttons collapsed. gotcha §1 is exactly this rule.
-                if (!force && rcMin.bottom - rcMin.top == s.LastMinLength) return;
                 int bandH = rcMin.bottom - rcMin.top;
+                if (!force && bandH == s.LastMinLength) return;      // 同上：比"看到的"带高
+                if (bandH - s.PhysicalHeight < MinTaskBandRemainder)
+                {
+                    Logger.WarnOnce("band-too-short",
+                        $"任务按钮带仅 {bandH}px，装不下 {s.PhysicalHeight}px 的覆盖层——本轮跳过"
+                        + "（可能装有第三方任务栏工具，建议改用悬浮模式）");
+                    return;
+                }
                 s.MinOriRect = rcMin;
                 s.MinOriValid = true;
                 s.MinSpace = rcMin.top - rcBar.top;
-                s.LastMinLength = bandH - s.PhysicalHeight;
+                s.LastMinLength = bandH - s.PhysicalHeight;  // 同上：收缩后的期望值
                 int y;
                 if (!s.Owner._onLeft)
                 {

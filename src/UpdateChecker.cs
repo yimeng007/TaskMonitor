@@ -149,6 +149,17 @@ namespace task_monitor
         // theoretical, but the ordering costs nothing). Single-shot is the contract: the
         // retry passes canRetry:false, so a second failure logs and gives up until the next
         // launch — deliberately, this is a startup nicety, not a poller.
+        /// <summary>退出时撤掉待执行的重试 —— 它到点会写 config.yaml，与 OnExit 的落盘撞车。幂等。</summary>
+        public static void Stop()
+        {
+            try
+            {
+                var timer = Interlocked.Exchange(ref _retryTimer, null);
+                timer?.Dispose();
+            }
+            catch { /* 尽力而为：退出路径不该因为撤定时器而抛 */ }
+        }
+
         private static void ScheduleRetry(AppSettings config, Action saveConfig)
         {
             try

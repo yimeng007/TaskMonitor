@@ -67,10 +67,14 @@ namespace task_monitor
             _ui = Dispatcher.CurrentDispatcher;
             _catalogTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(2) };
             _catalogTimer.Tick += (s, e) => Reconcile();
-            _reconcileDebounce = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(350) };
+            _reconcileDebounce = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(ReconcileDebounceMs) };
             _reconcileDebounce.Tick += (s, e) =>
             {
                 _reconcileDebounce.Stop();
+                var now = DateTime.UtcNow;
+                _recentReconciles = (now - _lastReconcileAt).TotalSeconds < ChurnWindowSeconds
+                    ? _recentReconciles + 1 : 1;
+                _lastReconcileAt = now;
                 Reconcile();
             };
         }
@@ -120,8 +124,9 @@ namespace task_monitor
             {
                 // 300ms 足够让正常退出走完；覆盖层线程都是 IsBackground=true，
                 // 即使没等到也会随进程结束，不存在滞留风险。原来 1000ms 让退出手感发黏。
+                // Debug 而非 Warn：超时是"没等到"，不是"出错"；进程退出时线程随之中止。
                 if (entry.Thread != null && entry.Thread.IsAlive && !entry.Thread.Join(300))
-                    Logger.Warn($"覆盖层线程退出等待超时：{entry.Id}");
+                    Logger.Debug($"覆盖层线程退出等待超时：{entry.Id}");
             }
         }
 
@@ -434,11 +439,23 @@ namespace task_monitor
             TriggerReconcile();
         }
 
+        // 驱动安装/卸载会把显示器枚举抖成 3~4 个伪设备（实测 WinDisc / Generic Non-PnP Monitor），
+        // 间隔 0.8~3.8 秒 —— 350ms 的防抖挡不住，于是每次都真的重建一遍覆盖层（用户看到闪 3 次）。
+        // 短时间连续触发就放宽到 2 秒，等抖动静下来再重建一次。
         private void TriggerReconcile()
         {
             _reconcileDebounce.Stop();
+            bool churning = (DateTime.UtcNow - _lastReconcileAt).TotalSeconds < ChurnWindowSeconds
+                            && _recentReconciles >= 1;
+            _reconcileDebounce.Interval = TimeSpan.FromMilliseconds(churning ? ChurnDebounceMs : ReconcileDebounceMs);
             _reconcileDebounce.Start();
         }
+
+        private const int ReconcileDebounceMs = 350;   // 正常插拔显示器：反应要快
+        private const int ChurnDebounceMs = 2000;      // 驱动装卸期间：等抖动静下来
+        private const int ChurnWindowSeconds = 8;      // "连续"的判定窗口
+        private int _recentReconciles;
+        private DateTime _lastReconcileAt;
 
         private void Reconcile()
         {

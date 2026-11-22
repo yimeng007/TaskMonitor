@@ -5,22 +5,10 @@ using System.Threading;
 namespace task_monitor
 {
     /// <summary>
-    /// 已使用流量，同时维护**今日**与**本月**两套累计（上传 / 下载分开）。
-    ///
-    /// 数据来源：采样线程每个 tick 给出 <c>NetUpBytesPerSec</c> / <c>NetDownBytesPerSec</c> 和
-    /// 实际采样间隔，这里按「速率 × 间隔」累加。不用网卡的累计字节做差分，因为网卡切换
-    /// （无线↔有线）、断连、休眠唤醒都会让那个值跳变，一次就能把几天的量算进当天。
-    ///
-    /// **重置规则**（用户 2026-11-11 定）：
-    ///  - 今日：每天 0 点归零，判据是 "yyyy-MM-dd"
-    ///  - 本月：每月 1 号归零，判据是 "yyyy-MM"
-    /// 两套各自独立判断，程序一直开着跨过 0 点也会当场切换。
-    ///
-    /// **已知限制**：程序没运行时不计入。这是速率累加方案的固有限制（TrafficMonitor 同）。
-    /// 想统计整天必须读 SRUM/SRBD 历史库，那有 60 分钟延迟，做不到实时。
-    ///
-    /// 线程模型：<see cref="Tick"/> 在采样线程调用，<see cref="Load"/> / <see cref="Store"/>
-    /// 在 UI 线程调用，所以计数用 Interlocked，日期串用 volatile。
+    /// 今日 / 本月的流量累计（上传下载分开），按「速率 × 实际间隔」累加 —— 不用网卡累计字节
+    /// 做差分（切网卡、断连、休眠唤醒都会跳变，一次能算进几天的量）。今日按 "yyyy-MM-dd"、
+    /// 本月按 "yyyy-MM" 各自归零，跨点当场切换。程序没运行的时间不计（速率方案的固有限制）。
+    /// 线程模型：Tick 在采样线程、Load/Store 在 UI 线程 → 计数用 Interlocked、日期串用 volatile。
     /// </summary>
     internal static class NetUsage
     {

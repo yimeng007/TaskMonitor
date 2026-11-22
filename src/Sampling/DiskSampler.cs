@@ -47,6 +47,68 @@ namespace task_monitor
 
         private string _driveLetters = "";          // "C: D:" — letters whose volumes sit on this disk
 
+        // 磁盘温度（℃）。null = 读不到（老系统 / USB 盒 / 驱动不报）——界面显示占位横线，不猜 0。
+        private float? _temperatureC;
+        public float? TemperatureC
+        {
+            get => _temperatureC;
+            internal set
+            {
+                if (_temperatureC != value)
+                {
+                    _temperatureC = value;
+                    Notify(nameof(TemperatureC));
+                    Notify(nameof(TemperatureText));
+                }
+            }
+        }
+
+        /// <summary>"39 ℃" 或占位横线：详情页直接绑这个。</summary>
+        public string TemperatureText => _temperatureC.HasValue
+            ? $"{_temperatureC.Value:F0} ℃"
+            : "--";
+
+        // 以下三项只有 NVMe SMART log 才给（SATA 走 ATA SMART，暂未实现）→ null 时显示占位横线。
+        private ulong? _powerOnHours;
+        public ulong? PowerOnHours
+        {
+            get => _powerOnHours;
+            internal set
+            {
+                if (_powerOnHours != value)
+                {
+                    _powerOnHours = value;
+                    Notify(nameof(PowerOnHours));
+                    Notify(nameof(PowerOnHoursText));
+                }
+            }
+        }
+
+        private int? _lifePercent;      // 已用寿命 %（NVMe percentage_used）
+        public int? LifePercent
+        {
+            get => _lifePercent;
+            internal set
+            {
+                if (_lifePercent != value)
+                {
+                    _lifePercent = value;
+                    Notify(nameof(LifePercent));
+                    Notify(nameof(LifePercentText));
+                }
+            }
+        }
+
+        public string PowerOnHoursText => _powerOnHours.HasValue
+            ? (_powerOnHours.Value >= 10000
+                ? $"{_powerOnHours.Value / 1000} 千小时"
+                : $"{_powerOnHours.Value} 小时")
+            : "--";
+
+        public string LifePercentText => _lifePercent.HasValue
+            ? $"{Math.Max(0, 100 - _lifePercent.Value)}%"     // 剩余寿命 = 100 - 已用
+            : "--";
+
         // Space-joined drive letters on this disk ("C: D:"); empty when it holds no
         // mounted volume. Refreshed at each re-enumeration (mounts change over time).
         public string DriveLetters
@@ -110,35 +172,14 @@ namespace task_monitor
     }
 
     /// <summary>
-    /// Samples per-physical-disk utilization / read / write / average response time the
-    /// way Task Manager's <c>WdcDiskMonitor::Query</c> does (reversed from Taskmgr.exe):
-    /// one zero-access handle per <c>\\.\PhysicalDriveN</c> (no elevation needed), an
-    /// <c>IOCTL_DISK_PERFORMANCE</c> read every tick, and delta math against the previous
-    /// cumulative counters:
-    ///
-    ///   utilization % = (1 − IdleTimeΔ / QueryTimeΔ) × 100
-    ///   read  B/s     = BytesReadΔ    / (QueryTimeΔ / 10⁷)
-    ///   write B/s     = BytesWrittenΔ / (QueryTimeΔ / 10⁷)
-    ///   response ms   = (ReadTimeΔ + WriteTimeΔ) / 10⁴, ÷ ReadCountΔ when non-zero
-    ///
-    /// (The response-time divisor is the READ count only — that is Task Manager's own
-    /// formula, verified in its disassembly, quirk included. When a tick has no reads
-    /// the undivided total is kept, exactly as Taskmgr does; negative → 0.)
-    ///
-    /// Disk type is classified once at enumeration via IOCTL_STORAGE_QUERY_PROPERTY:
-    /// BusType (SCM/USB/SD special-cased, FileBackedVirtual excluded like Taskmgr), then
-    /// StorageDeviceSeekPenaltyProperty — IncursSeekPenalty=false → SSD, else HDD (NVMe
-    /// lands here too, same as Task Manager).
-    ///
-    /// The disk set is re-probed every 30 ticks (cheap CreateFile probe) so hot-plugged
-    /// disks appear/disappear; baselines survive re-enumeration (keyed by disk number).
-    /// Single-threaded (taskbar STA thread), sampled every 1s.
-    ///
-    /// Handles are NEVER held open between ticks — each query opens the disk fresh and
-    /// closes it immediately. A held-open handle on a PhysicalDrive vetoes the PnP
-    /// query-remove (IRP_MN_QUERY_REMOVE_DEVICE), so "safely eject" of a USB drive
-    /// reports 设备被占用 while this app runs. Taskmgr avoids that by not retaining the
-    /// handle either; a fresh zero-access CreateFile per tick is negligible.
+    /// 按盘统计利用率/读/写/平均响应（公式与任务管理器 WdcDiskMonitor::Query 一致）：
+    ///   利用率% = (1 − IdleΔ/QueryTimeΔ)×100；读=B/s BytesReadΔ/(QueryTimeΔ/10⁷)
+    ///   平均响应ms = (ReadTimeΔ+WriteTimeΔ)/10⁴，再除以 ReadCountΔ（⚠ 只除读计数 ——
+    ///   任务管理器本身就是这个口径，含这个怪癖，反汇编核对过；无读时用未除的总值，负→0）
+    /// 类型只在枚举时判一次（BusType + SeekPenalty=false→SSD）。
+    /// 每 30 tick 重探一次以支持热插拔；基线与盘号绑定，重探后仍有效。
+    /// 句柄**绝不跨 tick 保留** —— 常开的 PhysicalDrive 句柄会否决 PnP query-remove，
+    /// 导致 U 盘"安全弹出"报设备被占用；每 tick 开一次零权限句柄开销可忽略。
     /// </summary>
     internal sealed class DiskSampler
     {
@@ -161,6 +202,12 @@ namespace task_monitor
         private readonly Dictionary<int, DiskEntry> _disks = new Dictionary<int, DiskEntry>();
         private readonly Queue<double> _history = new Queue<double>(MaxHistory);
         private int _ticksSinceEnumerate = ReenumerateEveryTicks; // enumerate on the first Sample()
+
+        // SMART（温度/通电/寿命）的变化以分钟计，没必要跟着 30 秒的重探跑：
+        // 实测每 30 秒读一次会让紧随其后的 IOCTL_DISK_PERFORMANCE 偶发 200~900ms
+        // （读写句柄打开会触发一次卷缓存刷新）。改成 5 分钟一次，干扰概率降一个量级。
+        private const int SmartRefreshEveryEnumerates = 10;   // 10 × 30 tick ≈ 5 分钟
+        private int _enumeratesSinceSmart;
 
         // The 显示方式 last used to build the headline (taskbar STA thread only). A change
         // clears the history so the chart never mixes values computed under two semantics.
@@ -353,6 +400,15 @@ namespace task_monitor
         // ---------- enumeration: probe \\.\PhysicalDriveN, classify, keep stable DiskInfos ----------
         private void Reenumerate()
         {
+            bool refreshSmart = _enumeratesSinceSmart == 0;
+            // 刷新后从 1 开始累加，等到 10 再刷（≈5 分钟）；不刷则继续累加
+            _enumeratesSinceSmart = refreshSmart ? 1 : _enumeratesSinceSmart + 1;
+            if (_enumeratesSinceSmart >= SmartRefreshEveryEnumerates) _enumeratesSinceSmart = 0;
+            ReenumerateCore(refreshSmart);
+        }
+
+        private void ReenumerateCore(bool refreshSmart)
+        {
             var seen = new HashSet<int>();
             for (int i = 0; i <= MaxProbeIndex; i++)
             {
@@ -363,6 +419,8 @@ namespace task_monitor
                 {
                     // Already tracked — keep its baseline, drop the probe handle.
                     handle.Dispose();
+                    // 已在跟踪的盘：按 5 分钟节流刷新（见 SmartRefreshEveryEnumerates）
+                    if (refreshSmart) ApplySmartInfo(existing.Info, i);
                     seen.Add(i);
                     continue;
                 }
@@ -376,13 +434,16 @@ namespace task_monitor
 
                 // Never retain the probe handle (see the class doc) — each tick reopens.
                 handle.Dispose();
+                var info = new DiskInfo(i, name, kind);
+                ApplySmartInfo(info, i);        // 新盘：立即读一次
                 _disks[i] = new DiskEntry
                 {
-                    Info = new DiskInfo(i, name, kind),
+                    Info = info,
                     HasBaseline = false,
                 };
                 seen.Add(i);
-                Logger.Info($"发现磁盘 PhysicalDrive{i}（{name}，{kind}）——纳入每 tick IOCTL_DISK_PERFORMANCE 采样");
+                Logger.Info($"发现磁盘 PhysicalDrive{i}（{name}，{kind}）——纳入每 tick IOCTL_DISK_PERFORMANCE 采样"
+                          + $"；温度={info.TemperatureText} 通电={info.PowerOnHoursText} 剩余寿命={info.LifePercentText}");
             }
 
             // Drop disks that no longer probe open (unplugged since the last enumeration).
@@ -452,6 +513,117 @@ namespace task_monitor
 
         // Query BusType + seek penalty + the vendor/product name. Returns false when the
         // disk should be excluded (FileBackedVirtual) — mirrors Taskmgr's ShouldIncludeDisk.
+        // 优先走 NVMe SMART/Health log（CrystalDiskInfo 同款：一次拿到温度/通电/寿命），
+        // 失败再退回 StorageDeviceTemperatureProperty（SATA / 老系统只有温度）。
+        private static void ApplySmartInfo(DiskInfo info, int index)
+        {
+            if (TryQueryNvmeSmart(index, out float tempC, out ulong hours, out int usedPercent))
+            {
+                info.TemperatureC = tempC;
+                info.PowerOnHours = hours;
+                info.LifePercent = usedPercent;
+                return;
+            }
+            info.TemperatureC = QueryTemperatureC(index);   // 兜底：只有温度
+        }
+
+        // NVMe SMART/Health log（Log Page 0x02），布局同 CrystalDiskInfo：
+        //   头 48 字节（Query 8 + ProtocolSpecific 40）之后是 512 字节日志。
+        // 字段（NVMe 1.4）：温度 K@1、寿命%@5、通电次数@112、通电小时@128。
+        private static bool TryQueryNvmeSmart(int index, out float tempC, out ulong powerOnHours, out int usedPercent)
+        {
+            tempC = 0; powerOnHours = 0; usedPercent = 0;
+            SafeFileHandle h = null;
+            try
+            {
+                string devicePath = @"\\?\PhysicalDrive" + index.ToString();
+                h = DiskInterop.CreateFileW(devicePath,
+                    DiskInterop.GenericRead | DiskInterop.GenericWrite,
+                    DiskInterop.FILE_SHARE_READ_WRITE, IntPtr.Zero, DiskInterop.OPEN_EXISTING, 0, IntPtr.Zero);
+                if (h == null || h.IsInvalid) return false;
+
+                const int header = DiskInterop.ProtocolSpecificHeaderSize;
+                var buf = new byte[header + DiskInterop.NvmeSmartLogLength];
+
+                // 依次尝试：Adapter(0x31) / Device(0x32) 两个属性 × subValue 0 / 0xFFFFFFFF。
+                // 不同驱动栈接受哪个不一样（CDI 只用 Adapter，LibreHardwareMonitor 也只用 Adapter，
+                // 加 Device 作兜底不吃亏）。
+                int[] propIds = { DiskInterop.StorageAdapterProtocolSpecificProperty,
+                                  DiskInterop.StorageDeviceProtocolSpecificProperty };
+                for (int attempt = 0; attempt < 4; attempt++)
+                {
+                    int propId = propIds[attempt / 2];
+                    bool useMax = (attempt % 2) == 1;
+                    Array.Clear(buf, 0, buf.Length);
+                    BitConverter.GetBytes(propId).CopyTo(buf, DiskInterop.OffsetPropertyId);
+                    BitConverter.GetBytes(0).CopyTo(buf, DiskInterop.OffsetQueryType);        // PropertyStandardQuery
+                    BitConverter.GetBytes(DiskInterop.ProtocolTypeNvme).CopyTo(buf, DiskInterop.OffsetProtocolType);
+                    BitConverter.GetBytes(DiskInterop.NvmeDataTypeLogPage).CopyTo(buf, DiskInterop.OffsetDataType);
+                    BitConverter.GetBytes(DiskInterop.NvmeSmartLogId).CopyTo(buf, DiskInterop.OffsetRequestValue);
+                    BitConverter.GetBytes(useMax ? unchecked((int)0xFFFFFFFF) : 0)
+                        .CopyTo(buf, DiskInterop.OffsetRequestSubValue);
+                    BitConverter.GetBytes(40).CopyTo(buf, DiskInterop.OffsetDataOffset);      // sizeof(ProtocolSpecific)
+                    BitConverter.GetBytes(DiskInterop.NvmeSmartLogLength).CopyTo(buf, DiskInterop.OffsetDataLength);
+
+                    if (!DiskInterop.DeviceIoControl(h, DiskInterop.IOCTL_STORAGE_QUERY_PROPERTY,
+                            buf, (uint)buf.Length, buf, (uint)buf.Length, out _, IntPtr.Zero))
+                    {
+                        // 失败时把 Win32 错误码带出来：5=权限、87=参数、1=不支持该功能
+                        int err = System.Runtime.InteropServices.Marshal.GetLastWin32Error();
+                        Logger.Debug($"[磁盘温度] PhysicalDrive{index} NVMe SMART 失败"
+                                   + $"（属性=0x{propId:X} sub={(useMax ? "FFFFFFFF" : "0")}）：err={err}");
+                        continue;
+                    }
+
+                    int d = header;
+                    int tempK = BitConverter.ToUInt16(buf, d + 1);
+                    if (tempK <= 0 || tempK > 1000) return false;   // 不是开尔文 → 这条不通
+                    tempC = tempK - 273.15f;
+                    usedPercent = buf[d + 5];
+                    // 通电次数（d+112）、通电小时（d+128）都是 128 位小端 → 取低 64 位足够
+                    powerOnHours = BitConverter.ToUInt64(buf, d + 128);
+                    if (powerOnHours == ulong.MaxValue) powerOnHours = 0;
+                    return tempC > -40f && tempC < 150f;
+                }
+                return false;
+            }
+            catch { return false; }
+            finally { h?.Dispose(); }
+        }
+
+        // 温度兜底路径（StorageDeviceTemperatureProperty，Win10 1709+ / NVMe 与 SATA 通用）。
+        // 需读权限 → 单独开 GENERIC_READ 句柄；失败一律 null（USB 盒 / RAID / 老系统）→ 界面显示占位横线。
+        private static float? QueryTemperatureC(int index)
+        {
+            SafeFileHandle h = null;
+            try
+            {
+                string devicePath = @"\\?\PhysicalDrive" + index.ToString();
+                h = DiskInterop.CreateFileW(devicePath, DiskInterop.GenericRead,
+                    DiskInterop.FILE_SHARE_READ_WRITE, IntPtr.Zero, DiskInterop.OPEN_EXISTING, 0, IntPtr.Zero);
+                if (h == null || h.IsInvalid) return null;
+
+                var query = DiskInterop.MakePropertyQuery(DiskInterop.StorageDeviceTemperatureProperty);
+                var buf = new byte[0x100];
+                if (!DiskInterop.DeviceIoControl(h, DiskInterop.IOCTL_STORAGE_QUERY_PROPERTY,
+                        query, (uint)query.Length, buf, (uint)buf.Length, out _, IntPtr.Zero))
+                    return null;
+
+                // STORAGE_TEMPERATURE_DATA_DESCRIPTOR{Version,Size,Critical,Warning,InfoCount,...}
+                // 紧跟 STORAGE_TEMPERATURE_INFO[]：每项 0x10，[0].Temperature 在 +0x02（℃）。
+                int count = BitConverter.ToUInt16(buf, 0x0C);
+                if (count <= 0) return null;
+                short raw = BitConverter.ToInt16(buf, 0x18 + 0x02);
+
+                float c = raw;
+                if (c > 200f) c = c / 10f - 273.15f;        // 个别驱动给 0.1K
+                if (c < -60f || c > 150f) return null;       // 离谱值当读不到
+                return c;
+            }
+            catch { return null; }
+            finally { h?.Dispose(); }
+        }
+
         private static bool TryClassify(SafeFileHandle handle, int index, out string name, out DiskKind kind)
         {
             name = null;
