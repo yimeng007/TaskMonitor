@@ -2,12 +2,13 @@
 
 > **个人修改版 · 非上游发布** — 基于 [linesoft2/TaskMonitor](https://github.com/linesoft2/TaskMonitor) `v2026.11.7.1`（作者 **双霖 (LineSoft)**，Apache-2.0）。
 >
-> **当前版本 `2026.11.18.2`**　｜　**[⬇ 下载安装包](../../releases)**　｜　Windows 10（1607+）/ 11，免安装
+> **当前版本 `2026.11.23.2`**　｜　**[⬇ 下载安装包](../../releases)**　｜　Windows 10（1607+）/ 11，免安装
 >
 > **系统要求：Windows 10（1607+）/ Windows 11，64 位。** Windows 7 / 8 / 8.1 不支持 —— 覆盖层依赖 DirectComposition 与 Win10 的 DPI 接口，启动时会提示并退出。
 >
-> 包内含 `说明与改动.md` 与两份 `【必读】` 文档。与上游行为冲突时以上游为准；
-> 具体改动见下文「本分支相对原版的改动」，条款依据与许可声明见文末「本分支来源与许可」。
+> 包内含 `版本说明-YYYY.MM.DD.N.md` 与两份 `【必读】` 文档（各含 `.md` 与 `.html` 两版）。
+> 与上游行为冲突时以上游为准；具体改动见下文「本分支相对原版的改动（基于上游 v2026.11.7.1）」，
+> 条款依据与许可声明见文末「本分支来源与许可」。
 
 **中文** | English (TODO)
 
@@ -17,9 +18,23 @@
   <img src="assets/header.webp" alt="TaskMonitor">
 </p>
 
-## 本分支相对原版的改动
+## 本分支相对原版的改动（基于上游 v2026.11.7.1）
 
 ### 新增
+
+**本版（2026.11.23.2）**
+
+- **磁盘温度 / 通电时长 / 剩余寿命**：磁盘详情新增，走 NVMe SMART/Health log
+  （`IOCTL_STORAGE_QUERY_PROPERTY` + 属性 `0x31`，退 `0x32`，再退温度属性 `0x34`），
+  **不需要内核驱动、不出网**；读不到时显示 `--`，不回退成 0。
+- **公网 IP 归属地更准**：地区查询改为三级链（pconline → cip.cc → ipwho.is），
+  并按**是否经代理**自动切换顺序；只拿到国名时会继续问下一家补齐省份与注册主体；
+  港澳台保留「中国」前缀。
+- **刷新更跟手**：点网络详情右上角刷新后 10 秒内每秒重查，切节点 → 见新 IP 中位 **2.4 s**（原最坏 15 s）。
+- **内存回收重做**（性能）—— 图标缓存改为全局共享并封顶 512 条，回收改压缩式 GC + 工作集收缩：
+  常驻 **257 MB → 48~110 MB**；详情窗上限改为 3 固定 + 1 临时。
+- **退出提速**（性能）—— 先关窗口、采样线程等待 1000 → 250 ms、覆盖层等待 1000 → 300 ms，
+  并撤掉退出时的更新检查重试、先停看门狗：托盘右键退出 **39~44 ms → 19 ms**。
 
 **① 使用方式与数据能力**
 
@@ -61,7 +76,20 @@
 
 > 同样按影响排：先「显示闪烁 / 消失 / 卡住」，再「画不出」，最后「排版」。
 
-**本版（2026.11.18.2）**
+**本版（2026.11.23.2）**
+
+- **更新显卡驱动时覆盖层不再连闪** —— 显示器目录抖动期加 2 秒防抖（与 350 ms 合并判断），
+  实测由「闪 3 次、恢复 13 秒」变为「重建 1 次、恢复 4 秒」。
+- **GPU 重置告警不再刷屏** —— 日志由 4 行 COM 堆栈压成 1 行（只留 HRESULT）。
+- **与 StartAllBack 不再互抢布局** —— 任务按钮带加 80 px 下限、连续变窄熔断、单拍逃逸熔断 + 越界夹紧、
+  任务栏族探测 10 秒 → 3 秒；检测到第三方任务栏时位置开关锁死并给出原因，设置页新增「卸载 StartAllBack」入口，
+  启动改为两选弹窗（保持现状 / 卸载），卸载后自动恢复。
+- **文案与开关** —— 「停靠在通知区域左侧」→「托盘图标左侧（屏幕右边）」；锁定提示条改为点开关才弹、8 秒收起；
+  左对齐时位置开关强制关闭。
+- **代码整理**（无行为变化）—— 位置赋值/卸载逻辑各收口一处、第三方检测加 5 秒缓存、事故叙事注释压缩、
+  本版新增代码的注释精简（整理后产物与整理前逐字节一致）。
+
+**上一版（2026.11.18.2）**
 
 - **退出变快** —— 关闭时主动打断在飞的网络请求（公网 IPv4/IPv6、地区查询、ICMP 探测），
   等待上限从 1000 ms 降到 250 ms；实测退出由 ≥1 秒变为 **20~320 ms**
@@ -103,7 +131,7 @@
 - **悬浮窗 + 贴边隐藏修好「弹出后自己收回」** —— 尤其换过任务栏位置之后；现在保持展开，鼠标真移开才收
 - **启动向导选项标题深色主题下看不清** —— 黑字压深色卡片，现在跟随主题反色
 
-> 逐条细节（触发条件、实测数据）见 Release 页面与包内 `说明与改动.md`。
+> 逐条细节（触发条件、实测数据）见 Release 页面与包内 `版本说明-YYYY.MM.DD.N.md`。
 
 **上一版（2026.11.14.2）**
 
@@ -116,7 +144,7 @@
 - **退出时菜单与任务栏不同步** —— 退出时界面线程被占，菜单动画卡在半透明
 - **设置页滚动掉帧** —— 整页 BitmapCache 起滚时要栅格化 3000px，比重绘视口更贵
 
-> 逐条细节（触发条件、实测数据）见 Release 页面与包内 `说明与改动.md`。
+> 逐条细节（触发条件、实测数据）见 Release 页面与包内 `版本说明-YYYY.MM.DD.N.md`。
 
 **更早版本（2026.11.12.2 及以前）**
 
@@ -152,6 +180,7 @@
 ### 未改动
 
 采样源与数据口径、详情弹窗的图表、单文件打包方式、提权流程，均沿用原版。
+（2026-11-23.2 起，地区查询源由 1 家扩到 3 家、磁盘详情增加 SMART 三项 —— 见上文「新增 → 本版（2026.11.23.2）」。）
 
 ## 安装 & 使用
 
@@ -163,7 +192,7 @@
 
 **免安装**，下载解压后双击 `task_monitor.exe` 即可。
 
-- **本分支下载（含预编译 exe）**：[Releases](https://github.com/yimeng007/TaskMonitor/releases)
+- **本分支下载（含预编译 exe）**：[Releases](../../releases)
 - **本分支源码**：[yimeng007/TaskMonitor](https://github.com/yimeng007/TaskMonitor)
 - **上游原版**：[CNB（大陆友好）](https://cnb.cool/linesoft2/TaskMonitor/-/releases) ｜ [GitHub](https://github.com/linesoft2/TaskMonitor/releases)
 
@@ -204,6 +233,11 @@
 - 由于部分接口需要 UAC 权限，本工具将始终申请 UAC ，后续可能会对此进行优化。
 - 由于本项目使用了多个未文档化的 API，随系统更新后可能存在兼容性问题，后续将逐步优化。
 - 公网IP的采集会向第三方网站发起请求，可在设置关闭此功能。
+- **CPU 温度不提供**：Windows 无可靠接口 —— ACPI 热区在多数主板返回固定假值，
+  读 MSR 需内核驱动（有蓝屏与杀软拦截风险），故不做。
+- **SATA 盘温度已实现但未实测**：手头无 SATA 盘；NVMe 路径已在三块盘上验证。
+- **Wi-Fi 名称 / 标准 / 频段**：Windows 11 需开启「位置」权限才可由 `WlanQueryInterface` 读取，
+  程序无权代开；未开时这三项不显示。
 
 ## TODO
 
@@ -223,10 +257,18 @@
 - [FluentWpfCore](https://github.com/TwilightLemon/FluentWpfCore) ([License](https://github.com/TwilightLemon/FluentWpfCore/blob/master/LICENSE.txt))
 - [YamlDotNet](https://github.com/aaubry/YamlDotNet) ([License](https://github.com/aaubry/YamlDotNet/blob/master/LICENSE.txt))
 
+**磁盘温度 / SMART 实现参考**（**参考调用方式与结构布局，未复制源码**）：
+
+- [CrystalDiskInfo](https://github.com/hiyohiyo/CrystalDiskInfo)（MIT）—— NVMe SMART/Health log 读取路径与字段偏移
+- [LibreHardwareMonitor](https://github.com/LibreHardwareMonitor/LibreHardwareMonitor)（MPL-2.0）—— `STORAGE_PROTOCOL_SPECIFIC_DATA` 缓冲区组织
+- [terrafx.interop.windows](https://github.com/terrafx/interop.windows)（MIT）—— `STORAGE_PROPERTY_ID` 枚举值核对
+
+> `STORAGE_PROPERTY_ID` 等常量出自 Windows SDK 头文件（`ntddstor.h` / `winioctl.h`），属公开 API 定义。
+
 ## 本分支来源与许可
 
 - **上游原版**：[linesoft2/TaskMonitor](https://github.com/linesoft2/TaskMonitor)，作者 **双霖 (LineSoft)**
-- **本分支基线**：上游 **v2026.11.7.1**（2026-11-07 发布）。版本号形如 `2026.11.18.2` —— 前段是日期，**末位 `.2` 表示个人修改版**（上游末位恒为 `.1`）
+- **本分支基线**：上游 **v2026.11.7.1**（2026-11-07 发布）。版本号形如 `2026.11.23.2` —— 前段是日期，**末位 `.2` 表示个人修改版**（上游末位恒为 `.1`）
 - **本分支仓库**：[yimeng007/TaskMonitor](https://github.com/yimeng007/TaskMonitor)
 - **许可**：[Apache License 2.0](LICENSE) —— 与原版一致，本分支的修改同样以 Apache-2.0 授权发布
 - **优先级**：本分支为个人修改版，非官方发布。与原版冲突时**以原版为准**；原版有任何问题请反馈给原作者
@@ -239,7 +281,7 @@
 
 条款：「必须使任何修改过的文件带有显著的声明，说明你更改了文件。」
 
-落实：源码改动见仓库提交记录与包内 `说明与改动.md`；程序「关于」页底部标注「个人修改版 · 非官方发布 / 修改：yimeng007 / 上游：github.com/linesoft2/TaskMonitor」。
+落实：源码改动见仓库提交记录与包内 `版本说明-YYYY.MM.DD.N.md`；程序「关于」页底部标注「个人修改版 · 非官方发布 / 修改：yimeng007 / 上游：github.com/linesoft2/TaskMonitor」。
 
 **二、保留声明（§4(c)）**
 
