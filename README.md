@@ -165,7 +165,7 @@
 **本版新增的参考**（仅参考调用方式与字段含义，未复制源码）：
 
 - [CrystalDiskInfo](https://github.com/hiyohiyo/CrystalDiskInfo)（MIT）—— NVMe SMART 字段定义
-- [smartmontools](https://www.smartmontools.org/)（GPL-2.0）—— SATA SMART 属性含义
+- [smartmontools](https://github.com/smartmontools/smartmontools)（GPL-2.0）—— SATA SMART 属性含义
 - [LibreHardwareMonitor](https://github.com/LibreHardwareMonitor/LibreHardwareMonitor)（MPL-2.0）—— 显卡风扇 / 功耗读取方式
 
 ## 本分支来源与许可
