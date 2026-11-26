@@ -1,5 +1,7 @@
 # TaskMonitor
 
+---
+
 > **个人修改版 · 非上游发布** — 基于 [linesoft2/TaskMonitor](https://github.com/linesoft2/TaskMonitor) `v2026.11.7.1`（作者 **双霖 (LineSoft)**，Apache-2.0）
 >
 > **当前版本 `2026.11.24.2`**　｜　**[⬇ 下载安装包](https://github.com/yimeng007/TaskMonitor/releases)**　｜　Windows 10（1607+）/ 11，免安装
@@ -8,6 +10,8 @@
 >
 > 包内含 `版本说明-YYYY.MM.DD.N.md` 与两份 `【必读】` 文档（各含 `.md` 与 `.html` 两版）。
 > 与上游行为冲突时以上游为准；条款依据与许可声明见文末「本分支来源与许可」。
+
+---
 
 **中文** | English (TODO)
 
