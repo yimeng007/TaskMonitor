@@ -26,11 +26,25 @@
 - 纯 Win32 接口实现，无驱动、无 Ring0 采集。
 - 完全免费，非盈利性，开放源代码。
 
+### 说明补得更清楚
+
+- **设置里两处「显示方式」加了说明** —— 磁盘与 GPU 的显示方式，现在直接写明它影响的是
+  任务栏 / 悬浮窗上的数字；详情窗的曲线另由「汇总 / 单盘」控制，不再让人以为是同一个开关。
+- **GPU 曲线与标签的关系写明了** —— 鼠标停在 GPU 标签上会提示：切换标签只改下方明细，
+  曲线按「设置 → GPU → 显示方式」显示（曲线自己的悬停仍显示「N 秒前：x%」）。
+- **存储页的「汇总 / 单盘」补了一句** —— 提示里注明任务栏数字另由设置决定。
+
+> **完整累积改动**（从第一个修改版到现在，42 条按主题分七组）→ **[改动清单.md](改动清单.md)**
 
 ## 安装 & 使用
 > **数据放在哪**：`settings.yaml` / `net_history.json` / `logs\` 默认跟 exe 同目录（绿色版）。
 > 把 exe 单独拷到桌面、下载、临时目录或盘符根目录运行时，为避免权限问题，
 > 数据改放 `%LOCALAPPDATA%\TaskMonitor\`（首次切换会自动复制旧配置，只复制不删除）。
+> 想直接打开这个目录：按 **Win+R**，粘贴 `explorer %LOCALAPPDATA%\TaskMonitor` 回车即可。
+
+> **第一次运行被系统拦了？** 常见几种：SmartScreen 蓝窗口（点「更多信息 → 仍要运行」）、
+> UAC「管理员已阻止」、Win11「智能应用控制」、杀软弹窗或右下角通知。逐项处理见
+> **[已知限制.md](已知限制.md#七安装时被系统拦截怎么办)**。
 
 **系统要求：Windows 10（1607 及以上）/ Windows 11，64 位**；另需 .NET Framework 4.8（系统自带）。
 
@@ -39,16 +53,11 @@
 
 - **本分支下载（含预编译 exe）**：[Releases](https://github.com/yimeng007/TaskMonitor/releases)
 - **本分支源码**：[yimeng007/TaskMonitor](https://github.com/yimeng007/TaskMonitor)
-- **开发与文档仓库**：[yimeng007/TaskMonitor-dev](https://github.com/yimeng007/TaskMonitor-dev)
 - **上游原版**：[CNB（大陆友好）](https://cnb.cool/linesoft2/TaskMonitor/-/releases) ｜ [GitHub](https://github.com/linesoft2/TaskMonitor)
-
-自己编译：`dotnet build task_monitor.csproj -c Release`，产物在 `bin/Release/net48/`
-（Costura 已把依赖打进单文件）。
 
 <p align="center">
   <img src="assets/taskbar_window.png" alt="TaskMonitor">
 </p>
-
 
 ## 功能
 - **CPU**：利用率、速度（含睿频）、进程数、线程数、句柄数、运行时间，以及每个进程的 CPU 占比。
@@ -60,7 +69,6 @@
   本月 / 今日流量、多月历史、丢包与错误计数，以及每个进程的网络速率。
 - **其他**：深色 / 浅色主题、触控与手势滚动、采样间隔可调、开机自启动（默认关闭，
   走系统「任务计划」，登录时以最高权限启动，不弹 UAC）。
-
 
 ## 这一版改了什么（2026.11.24.2）
 ### 新增
@@ -112,23 +120,21 @@
 - **移动硬盘不再拖慢程序**：外接盘的慢速查询移出每秒采样。
 - **慢盘自动降频**：单次查询超过 0.8 秒的硬盘改为三秒一次。
 
+## 常见已知限制
 
-## 限制
-- 由于部分接口需要管理员权限，程序会始终申请 UAC。
-- 使用了多个未文档化的 API，系统大版本更新后可能存在兼容性问题。
-- 公网 IP 的采集会向第三方网站发起请求，可在设置中关闭。
-- **CPU 温度不提供**：Windows 无可靠接口；读 MSR 需内核驱动（有蓝屏与杀软拦截风险）。
-- **AMD 显卡功耗不显示**：需要 AMD 的 ADLX 接口，本版未实现。
-- **Intel 独显功耗 / 风扇不显示**：需要 IGCL 接口，本版未实现。
-- **移动硬盘不显示实时读写**：硬盘盒单次查询可能耗时数秒，实时采样会拖慢程序。
-- **Wi-Fi 名称 / 标准 / 频段**：Windows 11 需开启「位置」权限，程序无权代开。
+- **CPU 温度不显示** —— Windows 没有可靠接口，读 MSR 需内核驱动（有蓝屏风险），不做。
+- **AMD / Intel 显卡的功耗与风扇不显示** —— 需要 ADLX / IGCL 接口，本版未接入；NVIDIA 有。
+- **移动硬盘不显示实时读写与 SMART** —— 硬盘盒的桥接芯片查询慢、且多数不透传 SMART。
+- **Wi-Fi 名称 / 标准 / 频段** —— Windows 11 需开启「位置」权限，程序无权代开。
+- **必须管理员权限** —— 按进程统计流量依赖 SRUM 实时接口，普通权限读不到。
+- **不支持 Windows 7 / 8 / 8.1 与 ARM64** —— 覆盖层依赖 DirectComposition 与 Win10 的 DWM 接口。
 
+> **完整清单**（含显卡驱动对照表、为什么有些值是 `--`、联网行为与隐私说明）→ **[已知限制.md](已知限制.md)**
 
 ## 制作背景
 当有程序执行高负载任务或系统卡顿时，我们经常需要查看系统的负载情况，
 同时也希望定位到具体哪个程序在占用资源。TaskMonitor 由此诞生：它常驻任务栏，
 实时展示五个维度的负载；点开任意一项还能看详情与该维度的高占用进程。
-
 
 ## TODO
 - [x] ~~Windows 10 兼容~~
@@ -137,7 +143,6 @@
 - [ ] 无障碍
 - [ ] 副屏支持
 - [ ] ARM64 支持
-
 
 ## 参考 / 致谢 / 开源许可
 上游原有的参考与致谢沿用不变，逐项如下：
@@ -157,12 +162,11 @@
 - [smartmontools](https://www.smartmontools.org/)（GPL-2.0）—— SATA SMART 属性含义
 - [LibreHardwareMonitor](https://github.com/LibreHardwareMonitor/LibreHardwareMonitor)（MPL-2.0）—— 显卡风扇 / 功耗读取方式
 
-
 ## 本分支来源与许可
 - **上游原版**：[linesoft2/TaskMonitor](https://github.com/linesoft2/TaskMonitor)，作者 **双霖 (LineSoft)**
 - **本分支基线**：上游 **v2026.11.7.1**（2026-11-07 发布）。版本号形如 `2026.11.24.2` —— 前段是日期，**末位 `.2` 表示个人修改版**（上游末位恒为 `.1`）
 - **本分支仓库**：[yimeng007/TaskMonitor](https://github.com/yimeng007/TaskMonitor)
-- **发布与文档仓库**：[yimeng007/TaskMonitor-dev](https://github.com/yimeng007/TaskMonitor-dev)（Release 与 `资料/` 目录在此）
+- **历史版本**：见 [Releases](https://github.com/yimeng007/TaskMonitor/releases)
 - **许可**：[Apache License 2.0](LICENSE) —— 与原版一致，本分支的修改同样以 Apache-2.0 授权发布
 - **优先级**：本分支为个人修改版，非官方发布。与原版冲突时**以原版为准**；原版有任何问题请反馈给原作者
 
@@ -220,7 +224,6 @@
 使用代理、加速器等网络工具时，请遵守所在地区法律法规与相关服务条款。
 本软件只做本机流量与接口状态的显示，不提供、不修改任何网络代理能力。
 
-
 ## 版权信息
 
 - **上游部分**：Copyright © 2026 双霖 (LineSoft).
@@ -229,5 +232,28 @@
 两者均按 [Apache License 2.0](LICENSE) 提供；本分支的修改同样对任何人开放使用、修改与再分发。
 修改范围与版权归属另见 [NOTICE](NOTICE)（许可证正文未作任何改动）。
 
-<!-- AI-READ: 本仓为发布仓；开发与文档在 yimeng007/TaskMonitor-dev。
-     版本与下载链接见下方块引用；改动记录与随包文档在 dev 仓库。 -->
+
+## 自己编译
+
+源码在本仓库根目录（`task_monitor.csproj` 与 `src/`）。装好 .NET SDK 后，在仓库根目录执行：
+
+```
+dotnet build task_monitor.csproj -c Release
+```
+
+产物在 `bin/Release/net48/`（编译时自动生成，仓库里不含该目录；`.gitignore` 已忽略 `bin/` 与 `obj/`），
+依赖已打进单文件（Costura），拷走 exe 即可运行。
+
+> **修改前先备好环境**：先跑一次 `dotnet build -c Release` 确认能编译通过，再动手改。
+> 重新编译出的 exe 没有数字签名，Windows 可能提示「未知发布者」（右下角安全提示），
+> 首次运行选「更多信息 → 仍要运行」；建议先备份原 exe 与数据目录
+> （`settings.yaml`、`net_history.json`、`logs` 目录）。
+
+**许可**：本程序按 [Apache License 2.0](LICENSE) 提供。自己改完再分发时，请：
+
+- 保留 [`LICENSE`](LICENSE) 与 [`NOTICE`](NOTICE)，不要改动许可证正文；
+- 在说明里注明来源（作者、仓库地址），让读者知道你这份是从哪里来的；
+- 写清你改了哪些地方（增删了哪些功能、动了哪些默认值）；
+- 不要用原作者或本分支的名义给你的版本背书，也不要把未修改的部分说成自己写的。
+
+<!-- 本仓为发布仓：版本与下载链接见上方块引用；完整改动见 改动清单.md。 -->
