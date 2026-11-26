@@ -1,9 +1,4 @@
 # TaskMonitor
-
-<!-- AI-READ: 本仓为发布仓；开发与文档在 yimeng007/TaskMonitor-dev。
-     版本与下载链接见下方块引用；改动记录与随包文档在 dev 仓库。 -->
----
-
 > **个人修改版 · 非上游发布** — 基于 [linesoft2/TaskMonitor](https://github.com/linesoft2/TaskMonitor) `v2026.11.7.1`（作者 **双霖 (LineSoft)**，Apache-2.0）
 >
 > **当前版本 `2026.11.24.2`**　｜　**[⬇ 下载安装包](https://github.com/yimeng007/TaskMonitor/releases)**　｜　Windows 10（1607+）/ 11，免安装
@@ -232,3 +227,6 @@
 
 两者均按 [Apache License 2.0](LICENSE) 提供；本分支的修改同样对任何人开放使用、修改与再分发。
 修改范围与版权归属另见 [NOTICE](NOTICE)（许可证正文未作任何改动）。
+
+<!-- AI-READ: 本仓为发布仓；开发与文档在 yimeng007/TaskMonitor-dev。
+     版本与下载链接见下方块引用；改动记录与随包文档在 dev 仓库。 -->
